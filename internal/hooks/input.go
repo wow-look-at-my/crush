@@ -16,30 +16,47 @@ import (
 // an older version. Unknown higher versions are still parsed but logged.
 const SupportedOutputVersion = 1
 
-// Payload is the JSON structure piped to hook commands via stdin.
-// ToolInput is emitted as a parsed JSON object for compatibility with
-// Claude Code hooks (which expect tool_input to be an object, not a
-// string).
+// Payload is the JSON structure piped to hook commands via stdin. The
+// common fields are present for every event; the per-event fields are
+// omitted when they don't apply. ToolInput and ToolResponse are emitted
+// as parsed JSON objects for compatibility with Claude Code hooks (which
+// expect objects, not strings), and HookEventName duplicates Event under
+// Claude Code's field name so its hook scripts port over unchanged.
 type Payload struct {
-	Event     string          `json:"event"`
-	SessionID string          `json:"session_id"`
-	CWD       string          `json:"cwd"`
-	ToolName  string          `json:"tool_name"`
-	ToolInput json.RawMessage `json:"tool_input"`
+	Event          string          `json:"event"`
+	HookEventName  string          `json:"hook_event_name"`
+	SessionID      string          `json:"session_id"`
+	CWD            string          `json:"cwd"`
+	ToolName       string          `json:"tool_name,omitempty"`
+	ToolInput      json.RawMessage `json:"tool_input,omitempty"`
+	ToolResponse   json.RawMessage `json:"tool_response,omitempty"`
+	Prompt         string          `json:"prompt,omitempty"`
+	StopHookActive *bool           `json:"stop_hook_active,omitempty"`
 }
 
 // BuildPayload constructs the JSON stdin payload for a hook command.
-func BuildPayload(eventName, sessionID, cwd, toolName, toolInputJSON string) []byte {
-	toolInput := json.RawMessage(toolInputJSON)
-	if !json.Valid(toolInput) {
-		toolInput = json.RawMessage("{}")
-	}
+func BuildPayload(ev Event, cwd string) []byte {
 	p := Payload{
-		Event:     eventName,
-		SessionID: sessionID,
-		CWD:       cwd,
-		ToolName:  toolName,
-		ToolInput: toolInput,
+		Event:         ev.Name,
+		HookEventName: ev.Name,
+		SessionID:     ev.SessionID,
+		CWD:           cwd,
+		ToolName:      ev.ToolName,
+		Prompt:        ev.Prompt,
+	}
+	if ev.usesMatcher() {
+		// Tool events always carry tool_input, defaulting to an empty
+		// object when the model produced invalid JSON.
+		p.ToolInput = validJSON(ev.ToolInput)
+	}
+	if ev.Name == EventPostToolUse {
+		p.ToolResponse = validJSON(ev.ToolResponse)
+	}
+	if ev.Name == EventStop || ev.Name == EventSubagentStop {
+		// Emitted even when false: Claude Code stop hooks branch on this
+		// field, so omitting the zero value would break them.
+		active := ev.StopHookActive
+		p.StopHookActive = &active
 	}
 	data, err := json.Marshal(p)
 	if err != nil {
@@ -48,31 +65,61 @@ func BuildPayload(eventName, sessionID, cwd, toolName, toolInputJSON string) []b
 	return data
 }
 
+// validJSON returns raw as a JSON value, falling back to an empty object
+// when raw is not valid JSON.
+func validJSON(raw string) json.RawMessage {
+	msg := json.RawMessage(raw)
+	if !json.Valid(msg) {
+		return json.RawMessage("{}")
+	}
+	return msg
+}
+
 // BuildEnv constructs the environment variable slice for a hook command.
 // It includes all current process env vars plus hook-specific ones.
-func BuildEnv(eventName, toolName, sessionID, cwd, projectDir, toolInputJSON string) []string {
+func BuildEnv(ev Event, cwd, projectDir string) []string {
 	env := os.Environ()
 	env = append(env, shell.CrushEnvMarkers()...)
 	env = append(
 		env,
-		fmt.Sprintf("CRUSH_EVENT=%s", eventName),
-		fmt.Sprintf("CRUSH_TOOL_NAME=%s", toolName),
-		fmt.Sprintf("CRUSH_SESSION_ID=%s", sessionID),
+		fmt.Sprintf("CRUSH_EVENT=%s", ev.Name),
+		fmt.Sprintf("CRUSH_TOOL_NAME=%s", ev.ToolName),
+		fmt.Sprintf("CRUSH_SESSION_ID=%s", ev.SessionID),
 		fmt.Sprintf("CRUSH_CWD=%s", cwd),
 		fmt.Sprintf("CRUSH_PROJECT_DIR=%s", projectDir),
 	)
 
 	// Extract tool-specific env vars from the JSON input.
-	if toolInputJSON != "" {
-		if cmd := gjson.Get(toolInputJSON, "command"); cmd.Exists() {
+	if ev.ToolInput != "" {
+		if cmd := gjson.Get(ev.ToolInput, "command"); cmd.Exists() {
 			env = append(env, fmt.Sprintf("CRUSH_TOOL_INPUT_COMMAND=%s", cmd.String()))
 		}
-		if fp := gjson.Get(toolInputJSON, "file_path"); fp.Exists() {
+		if fp := gjson.Get(ev.ToolInput, "file_path"); fp.Exists() {
 			env = append(env, fmt.Sprintf("CRUSH_TOOL_INPUT_FILE_PATH=%s", fp.String()))
 		}
 	}
 
 	return env
+}
+
+// parseStdoutForEvent parses hook stdout with per-event handling layered
+// on top of parseStdout. For UserPromptSubmit, non-JSON stdout is treated
+// as additional context (Claude Code compatibility: plain stdout from a
+// prompt hook is injected into the prompt); every other event requires
+// the JSON envelope.
+func parseStdoutForEvent(event, stdout string) HookResult {
+	if event != EventUserPromptSubmit {
+		return parseStdout(stdout)
+	}
+	trimmed := strings.TrimSpace(stdout)
+	if trimmed == "" {
+		return HookResult{Decision: DecisionNone}
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(trimmed), &raw); err != nil {
+		return HookResult{Decision: DecisionNone, Context: trimmed}
+	}
+	return parseStdout(stdout)
 }
 
 // parseStdout parses the JSON output from a hook command's stdout.
@@ -199,11 +246,15 @@ func rawToString(raw json.RawMessage) string {
 	return string(raw)
 }
 
+// parseDecision maps a decision string to a Decision. "approve" and
+// "block" are Claude Code's vocabulary (its Stop, PostToolUse, and
+// UserPromptSubmit hooks emit {"decision":"block"}) and are accepted as
+// aliases so those scripts run under Crush unchanged.
 func parseDecision(s string) Decision {
 	switch strings.ToLower(s) {
-	case "allow":
+	case "allow", "approve":
 		return DecisionAllow
-	case "deny":
+	case "deny", "block":
 		return DecisionDeny
 	default:
 		return DecisionNone

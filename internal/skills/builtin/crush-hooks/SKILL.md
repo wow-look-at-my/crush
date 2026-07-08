@@ -6,18 +6,32 @@ description: Use when the user wants to add, write, debug, or configure a Crush 
 # Crush Hooks
 
 Hooks are user-defined commands in `crush.json` that fire at specific points
-during execution, giving deterministic control over tool behavior. They run
-**before** permission checks and **only on the top-level agent's** tool calls —
-sub-agent calls (task tool, agentic_fetch, etc.) are not intercepted, though
-the sub-agent tool call itself is.
+during execution, giving deterministic control over agent behavior. Tool hooks
+fire **only on the top-level agent's** tool calls — sub-agent calls (task
+tool, agentic_fetch, etc.) are not intercepted, though the sub-agent tool call
+itself is. `PreToolUse` runs **before** permission checks.
 
 For the full reference, see `docs/hooks/README.md`. This skill covers what you
 need to author correct hooks.
 
 ## Supported Events
 
-Only `PreToolUse` is currently supported. Event names are case-insensitive and
-accept snake_case (`PreToolUse`, `pretooluse`, `pre_tool_use` all work).
+| Event              | Fires…                                           | Matcher   | Blocking (`exit 2` / `deny`) means…                      |
+| ------------------ | ------------------------------------------------ | --------- | -------------------------------------------------------- |
+| `PreToolUse`       | before a tool call executes                      | tool name | the tool call never runs                                  |
+| `PostToolUse`      | after a tool call completes (`tool_response` in payload) | tool name | the reason is appended to the tool result as feedback |
+| `UserPromptSubmit` | on prompt submission, before storing/sending it  | —         | the turn is aborted; reason is the visible error          |
+| `Stop`             | when the agent finishes a turn and would go idle | —         | the reason is sent back as a follow-up prompt             |
+| `SubagentStop`     | when a sub-agent run completes                   | —         | the reason is sent back into the sub-agent once           |
+
+Event names are case-insensitive and accept snake_case (`PreToolUse`,
+`pretooluse`, `pre_tool_use` all work). `matcher` only applies to the tool
+events; other events ignore it. Stop-style events carry `stop_hook_active`
+in the payload (true when the turn was already continued by a stop hook —
+check it, and note Crush ignores a repeat block anyway). `UserPromptSubmit`
+carries `prompt`, and plain non-JSON stdout from it becomes context appended
+to the prompt. Stop/SubagentStop blocks need a non-empty `reason` (it becomes
+the follow-up prompt).
 
 ## Configuration
 
@@ -64,6 +78,7 @@ the input/output contract is identical regardless of language.
 ```json
 {
   "event": "PreToolUse",
+  "hook_event_name": "PreToolUse",
   "session_id": "313909e",
   "cwd": "/home/user/project",
   "tool_name": "bash",
@@ -71,21 +86,29 @@ the input/output contract is identical regardless of language.
 }
 ```
 
+Per-event extras: `PostToolUse` adds `tool_response` (`{"content": …,
+"is_error": …}`, with `tool_input` reflecting any PreToolUse rewrite),
+`UserPromptSubmit` adds `prompt`, and `Stop`/`SubagentStop` add
+`stop_hook_active`.
+
 ## Output
 
 Communicate back via exit code (+ stderr) or JSON on stdout.
 
-| Exit Code | Meaning                                                       |
-| --------- | ------------------------------------------------------------- |
-| 0         | Success. Stdout is parsed as the JSON envelope below.         |
-| 2         | Block this tool call. Stderr becomes the deny reason.         |
-| 49        | Halt the whole turn. Stderr becomes the halt reason.          |
-| Other     | Non-blocking error. Logged and ignored; tool call proceeds.   |
+| Exit Code | Meaning                                                          |
+| --------- | ---------------------------------------------------------------- |
+| 0         | Success. Stdout is parsed as the JSON envelope below.            |
+| 2         | Block (deny). Stderr becomes the reason.                         |
+| 49        | Halt the whole turn. Stderr becomes the halt reason.             |
+| Other     | Non-blocking error. Logged and ignored; the action proceeds.     |
 
-Exit 2 blocks one tool call (agent sees the reason and can try again); exit 49
-ends the whole turn (user takes over). Default to deny — reach for halt only
-when letting the agent retry is itself the problem (e.g. secrets detected,
-policy violation).
+What "block" does depends on the event (see the table above): on `PreToolUse`
+the agent sees the reason and can try again, on `PostToolUse` the reason rides
+on the tool result, on `UserPromptSubmit` the turn aborts, and on the stop
+events the reason becomes a follow-up prompt. Exit 49 ends the whole turn
+(user takes over; a no-op on stop events). Default to deny — reach for halt
+only when letting the agent retry is itself the problem (e.g. secrets
+detected, policy violation).
 
 **JSON envelope (exit 0):**
 
@@ -100,7 +123,8 @@ policy violation).
 }
 ```
 
-- **`decision`**: `"allow"`, `"deny"`, or omit. `"allow"` is **affirmative
+- **`decision`**: `"allow"`, `"deny"`, or omit (Claude Code's `"approve"`/
+  `"block"` are accepted aliases). On `PreToolUse`, `"allow"` is **affirmative
   pre-approval** — it bypasses the permission prompt entirely. Omit it
   (or `null`) when you only want to inject context or rewrite input without
   also auto-approving the call.
@@ -187,7 +211,8 @@ preserved.
 
 1. Add `#!/usr/bin/env bash` and `set -euo pipefail` (for shell scripts).
 2. `chmod +x` the script.
-3. Add the entry under `hooks.PreToolUse` in `crush.json` with the right matcher.
+3. Add the entry under `hooks.<EventName>` in `crush.json` — with the right
+   matcher for tool events.
 4. Decide intent: inject context (omit `decision`), auto-approve (`"allow"`),
    block (`exit 2`), or halt (`exit 49`).
 5. If rewriting input, remember `updated_input` is a shallow merge — only

@@ -12,8 +12,61 @@ import (
 
 // Hook event name constants.
 const (
+	// EventPreToolUse fires before a tool call executes. Matchers are
+	// tested against the tool name. Deny blocks the call; allow
+	// pre-approves it past the permission prompt.
 	EventPreToolUse = "PreToolUse"
+	// EventPostToolUse fires after a tool call completes. Matchers are
+	// tested against the tool name. The tool already ran, so deny only
+	// feeds the hook's reason back to the model.
+	EventPostToolUse = "PostToolUse"
+	// EventUserPromptSubmit fires when a user prompt is submitted,
+	// before the turn starts. Deny aborts the turn; context is appended
+	// to the prompt.
+	EventUserPromptSubmit = "UserPromptSubmit"
+	// EventStop fires when the top-level agent finishes a turn normally
+	// and is about to go idle. Deny feeds the hook's reason back as a
+	// follow-up prompt so the agent continues.
+	EventStop = "Stop"
+	// EventSubagentStop fires when a sub-agent run completes normally.
+	// Deny feeds the hook's reason back into the sub-agent once.
+	EventSubagentStop = "SubagentStop"
 )
+
+// Event describes a single hook firing: the event name plus its
+// event-specific payload fields. Only Name and SessionID are universal;
+// the rest are serialized to hooks only when relevant to the event.
+//
+// Adding a new event is intentionally cheap: add a constant above, add
+// any new payload field here and in Payload (input.go), and fire
+// Runner.Run with a populated Event at the call site.
+type Event struct {
+	Name      string
+	SessionID string
+
+	// ToolName and ToolInput apply to the tool events (PreToolUse,
+	// PostToolUse). ToolName is also the matcher target.
+	ToolName  string
+	ToolInput string // raw JSON
+
+	// ToolResponse applies to PostToolUse: the executed tool's result.
+	ToolResponse string // raw JSON
+
+	// Prompt applies to UserPromptSubmit.
+	Prompt string
+
+	// StopHookActive applies to Stop and SubagentStop: true when the
+	// finishing turn was itself started by a Stop-hook continuation, so
+	// hooks can avoid keeping the agent running forever.
+	StopHookActive bool
+}
+
+// usesMatcher reports whether hook matchers apply to this event.
+// Matchers are regexes over tool names, so only the tool events use
+// them; hooks on other events fire regardless of their matcher.
+func (e Event) usesMatcher() bool {
+	return e.Name == EventPreToolUse || e.Name == EventPostToolUse
+}
 
 // HaltExitCode is the exit code that halts the whole turn. 2 blocks the
 // current tool call; 49 sits in the no-man's-land between the

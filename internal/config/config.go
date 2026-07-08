@@ -573,8 +573,10 @@ func (t ToolGlob) GetTimeout() time.Duration {
 type HookConfig struct {
 	// Friendly display name shown in the TUI. Falls back to Command when empty.
 	Name string `json:"name,omitempty" jsonschema:"description=Friendly display name shown in the TUI for this hook"`
-	// Regex pattern tested against the tool name. Empty means match all.
-	Matcher string `json:"matcher,omitempty" jsonschema:"description=Regex pattern tested against the tool name. Empty means match all tools."`
+	// Regex pattern tested against the tool name on the tool events
+	// (PreToolUse/PostToolUse). Empty means match all; other events
+	// ignore the matcher.
+	Matcher string `json:"matcher,omitempty" jsonschema:"description=Regex pattern tested against the tool name on tool events (PreToolUse/PostToolUse). Empty means match all tools; other events ignore it."`
 	// Shell command to execute.
 	Command string `json:"command" jsonschema:"required,description=Shell command to execute when the hook fires"`
 	// Timeout in seconds. Default 30.
@@ -622,7 +624,7 @@ type Config struct {
 
 	Tools Tools `json:"tools,omitzero" jsonschema:"description=Tool configurations"`
 
-	Hooks map[string][]HookConfig `json:"hooks,omitempty" jsonschema:"description=User-defined shell commands that fire on hook events (e.g. PreToolUse)"`
+	Hooks map[string][]HookConfig `json:"hooks,omitempty" jsonschema:"description=User-defined shell commands that fire on hook events (PreToolUse / PostToolUse / UserPromptSubmit / Stop / SubagentStop)"`
 
 	Agents map[string]Agent `json:"-"`
 }

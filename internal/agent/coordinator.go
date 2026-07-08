@@ -118,6 +118,13 @@ type coordinator struct {
 	currentAgent SessionAgent
 	agents       map[string]SessionAgent
 
+	// hooks runs the user's configured hooks for every event. Nil when
+	// no hooks are configured. The coordinator owns the single Runner:
+	// tool wrappers (PreToolUse/PostToolUse), the top-level session
+	// agent (Stop), and the coordinator itself (UserPromptSubmit,
+	// SubagentStop) all share it.
+	hooks *hooks.Runner
+
 	// Skills discovery results (session-start snapshot).
 	allSkills    []*skills.Skill // Pre-filter: all discovered after dedup.
 	activeSkills []*skills.Skill // Post-filter: active skills only.
@@ -168,6 +175,10 @@ func NewCoordinator(
 		skillTracker: skillTracker,
 	}
 
+	if cfgHooks := cfg.Config().Hooks; len(cfgHooks) > 0 {
+		c.hooks = hooks.NewRunner(cfgHooks, cfg.WorkingDir(), cfg.WorkingDir())
+	}
+
 	agentCfg, ok := cfg.Config().Agents[config.AgentCoder]
 	if !ok {
 		return nil, errCoderAgentNotConfigured
@@ -206,6 +217,16 @@ func (c *coordinator) RunAccepted(ctx context.Context, accept *AcceptedRun, sess
 func (c *coordinator) run(ctx context.Context, accept *AcceptedRun, sessionID string, prompt string, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
 	if err := c.readyWg.Wait(); err != nil {
 		return nil, err
+	}
+
+	// UserPromptSubmit hooks fire here — the single choke point every
+	// prompt submission (TUI, `crush run`, server) funnels through —
+	// before the user message is persisted or sent. A block aborts the
+	// turn with the hook's reason as the error; hook context is appended
+	// to the prompt.
+	prompt, promptErr := c.runUserPromptHooks(ctx, sessionID, prompt)
+	if promptErr != nil {
+		return nil, promptErr
 	}
 
 	// refresh models before each run
@@ -311,6 +332,36 @@ func (c *coordinator) run(ctx context.Context, accept *AcceptedRun, sessionID st
 		MarkRunCompletePublished(ctx)
 	}
 	return result, originalErr
+}
+
+// runUserPromptHooks fires UserPromptSubmit hooks for a prompt that is
+// about to start a turn. It returns the prompt to use — extended with any
+// hook context — or an error when a hook blocked the submission. The
+// error is the user-visible outcome: the turn never starts and no user
+// message is persisted.
+func (c *coordinator) runUserPromptHooks(ctx context.Context, sessionID, prompt string) (string, error) {
+	if c.hooks == nil {
+		return prompt, nil
+	}
+	result, err := c.hooks.Run(ctx, hooks.Event{
+		Name:      hooks.EventUserPromptSubmit,
+		SessionID: sessionID,
+		Prompt:    prompt,
+	})
+	if err != nil {
+		slog.Warn("Hook execution error, proceeding with prompt", "error", err)
+	}
+	if result.Decision == hooks.DecisionDeny || result.Halt {
+		reason := result.Reason
+		if reason == "" {
+			reason = "blocked by hook"
+		}
+		return "", fmt.Errorf("prompt blocked by %s hook: %s", hooks.EventUserPromptSubmit, reason)
+	}
+	if result.Context != "" {
+		prompt += "\n\n" + result.Context
+	}
+	return prompt, nil
 }
 
 // effectiveReasoningEffort returns the reasoning effort to apply for provider calls.
@@ -583,6 +634,13 @@ func (c *coordinator) buildAgent(ctx context.Context, prompt *prompt.Prompt, age
 		return nil, err
 	}
 
+	// Only the top-level agent fires Stop hooks; a sub-agent's
+	// completion fires SubagentStop from the caller's side (runSubAgent).
+	var agentHooks *hooks.Runner
+	if !isSubAgent {
+		agentHooks = c.hooks
+	}
+
 	largeProviderCfg, _ := c.cfg.Config().Providers.Get(large.ModelCfg.Provider)
 	result := NewSessionAgent(SessionAgentOptions{
 		LargeModel:           large,
@@ -597,6 +655,7 @@ func (c *coordinator) buildAgent(ctx context.Context, prompt *prompt.Prompt, age
 		Tools:                nil,
 		Notify:               c.notify,
 		RunComplete:          c.runComplete,
+		Hooks:                agentHooks,
 	})
 
 	c.readyWg.Go(func() error {
@@ -647,12 +706,6 @@ func (c *coordinator) buildTools(ctx context.Context, agent config.Agent, isSubA
 	}
 
 	logFile := filepath.Join(c.cfg.Config().Options.DataDirectory, "logs", "crush.log")
-
-	// Build hook runner if PreToolUse hooks are configured.
-	var hookRunner *hooks.Runner
-	if preToolHooks := c.cfg.Config().Hooks[hooks.EventPreToolUse]; len(preToolHooks) > 0 {
-		hookRunner = hooks.NewRunner(preToolHooks, c.cfg.WorkingDir(), c.cfg.WorkingDir())
-	}
 
 	allTools = append(
 		allTools,
@@ -722,12 +775,13 @@ func (c *coordinator) buildTools(ctx context.Context, agent config.Agent, isSubA
 		return strings.Compare(a.Info().Name, b.Info().Name)
 	})
 
-	// Wrap tools with hook interception for the top-level agent only.
-	// Sub-agents (the `agent` task tool, `agentic_fetch`, etc.) run
-	// without hook interception to avoid firing the user's hook N times
-	// per delegated turn. The top-level invocation of the sub-agent tool
-	// itself is still wrapped from the coder's side.
-	filteredTools = wrapToolsWithHooks(filteredTools, hookRunner, isSubAgent)
+	// Wrap tools with hook interception (PreToolUse/PostToolUse) for the
+	// top-level agent only. Sub-agents (the `agent` task tool,
+	// `agentic_fetch`, etc.) run without hook interception to avoid
+	// firing the user's hook N times per delegated turn. The top-level
+	// invocation of the sub-agent tool itself is still wrapped from the
+	// coder's side.
+	filteredTools = wrapToolsWithHooks(filteredTools, c.hooks, isSubAgent)
 
 	return filteredTools, nil
 }
@@ -1302,26 +1356,27 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 	}
 
 	// Run the agent
-	run := func() (*fantasy.AgentResult, error) {
-		return params.Agent.Run(ctx, SessionAgentCall{
-			SessionID:        session.ID,
-			Prompt:           params.Prompt,
-			MaxOutputTokens:  maxTokens,
-			ProviderOptions:  getProviderOptions(model, providerCfg),
-			Temperature:      model.ModelCfg.Temperature,
-			TopP:             model.ModelCfg.TopP,
-			TopK:             model.ModelCfg.TopK,
-			FrequencyPenalty: model.ModelCfg.FrequencyPenalty,
-			PresencePenalty:  model.ModelCfg.PresencePenalty,
-			NonInteractive:   true,
+	run := func(prompt string) (*fantasy.AgentResult, error) {
+		var result *fantasy.AgentResult
+		err := c.runWithUnauthorizedRetry(ctx, providerCfg, func() error {
+			var runErr error
+			result, runErr = params.Agent.Run(ctx, SessionAgentCall{
+				SessionID:        session.ID,
+				Prompt:           prompt,
+				MaxOutputTokens:  maxTokens,
+				ProviderOptions:  getProviderOptions(model, providerCfg),
+				Temperature:      model.ModelCfg.Temperature,
+				TopP:             model.ModelCfg.TopP,
+				TopK:             model.ModelCfg.TopK,
+				FrequencyPenalty: model.ModelCfg.FrequencyPenalty,
+				PresencePenalty:  model.ModelCfg.PresencePenalty,
+				NonInteractive:   true,
+			})
+			return runErr
 		})
+		return result, err
 	}
-	var result *fantasy.AgentResult
-	err = c.runWithUnauthorizedRetry(ctx, providerCfg, func() error {
-		var runErr error
-		result, runErr = run()
-		return runErr
-	})
+	result, err := run(params.Prompt)
 	// Notify only if still unauthorized after retry.
 	if err != nil && c.isUnauthorized(err) && c.notify != nil && model.ModelCfg.Provider == hyper.Name {
 		c.notify.Publish(pubsub.CreatedEvent, notify.Notification{
@@ -1332,6 +1387,12 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 	if err != nil {
 		return fantasy.NewTextErrorResponse(fmt.Sprintf("Failed to generate response: %s", err)), nil
 	}
+
+	// SubagentStop hooks fire when the sub-agent completes. A block sends
+	// the hook's reason back into the same sub-agent session as a
+	// follow-up prompt (at most once — the re-fire after the continuation
+	// carries stop_hook_active=true and cannot block again).
+	result = c.runSubagentStopHooks(ctx, session.ID, result, run)
 
 	// Update parent session cost on a best-effort basis. A failure here must
 	// not discard the sub-agent output that was already produced.
@@ -1349,6 +1410,46 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 		return fantasy.NewTextErrorResponse("Sub-agent completed but produced no text output."), nil
 	}
 	return fantasy.NewTextResponse(output), nil
+}
+
+// runSubagentStopHooks fires SubagentStop hooks for a completed sub-agent
+// run. When a hook blocks, the hook's reason is fed back into the same
+// sub-agent session via run and the returned result replaces the
+// original; the hooks then re-fire with stop_hook_active=true, where a
+// repeat block is ignored so a misbehaving hook extends the sub-agent by
+// at most one continuation. A failed continuation keeps the original
+// result.
+func (c *coordinator) runSubagentStopHooks(ctx context.Context, sessionID string, result *fantasy.AgentResult, run func(prompt string) (*fantasy.AgentResult, error)) *fantasy.AgentResult {
+	stopHookActive := false
+	for c.hooks != nil && ctx.Err() == nil {
+		hookResult, err := c.hooks.Run(ctx, hooks.Event{
+			Name:           hooks.EventSubagentStop,
+			SessionID:      sessionID,
+			StopHookActive: stopHookActive,
+		})
+		if err != nil {
+			slog.Warn("SubagentStop hook execution error; stopping normally", "error", err)
+		}
+		if hookResult.Decision != hooks.DecisionDeny || ctx.Err() != nil {
+			break
+		}
+		if stopHookActive {
+			slog.Warn("SubagentStop hook blocked again on a stop-hook continuation; stopping anyway")
+			break
+		}
+		if hookResult.Reason == "" {
+			slog.Warn("SubagentStop hook blocked without a reason; stopping anyway")
+			break
+		}
+		continuation, contErr := run(hookResult.Reason)
+		if contErr != nil {
+			slog.Warn("SubagentStop hook continuation failed; keeping original result", "error", contErr)
+			break
+		}
+		result = continuation
+		stopHookActive = true
+	}
+	return result
 }
 
 func subAgentOutput(result *fantasy.AgentResult) string {

@@ -17,8 +17,9 @@ forward.
 - Hooks are Claude Code-compatible
 - Crush ships with a builtin `crush-hook` skill write, edit, and configure
   hooks; just tell Crush how to configure Crush
-- Crush currently supports just one hook, `PreToolUse`, with plans to support
-  the full gamut; please let us know which hooks you'd like to see next
+- Crush supports five events — `PreToolUse`, `PostToolUse`,
+  `UserPromptSubmit`, `Stop`, and `SubagentStop` — with plans to support the
+  full gamut; please let us know which hooks you'd like to see next
 - Hooks run in parallel for speed, but their results compose in config order
   for determinism
 
@@ -176,7 +177,25 @@ wins when rewriting input, but first deny wins when blocking.
 
 ## Events
 
-Here are the events you can hook into (spoiler: there's currently just one):
+Here are the events you can hook into:
+
+| Event              | Fires…                                            | Matcher   | Blocking (`exit 2` / `deny`) means…                    |
+| ------------------ | ------------------------------------------------- | --------- | ------------------------------------------------------ |
+| `PreToolUse`       | before a tool call executes                       | tool name | the tool call never runs                               |
+| `PostToolUse`      | after a tool call completes                       | tool name | the reason is fed back to the model (tool already ran) |
+| `UserPromptSubmit` | when you submit a prompt, before the turn starts  | —         | the turn is aborted with the reason as the error       |
+| `Stop`             | when the agent finishes its turn and would idle   | —         | the reason is sent back as a prompt; the agent continues |
+| `SubagentStop`     | when a sub-agent run completes                    | —         | the reason is sent back into the sub-agent once        |
+
+> [!NOTE]
+> Event names are case insensitive and snake-caseable, so `PreToolUse`,
+> `pretooluse`, `PRETOOLUSE`, `pre_tool_use`, and `PRE_TOOL_USE` all work.
+> Unknown event names are accepted but never fire, so a config shared with
+> another tool won't fail to load.
+
+Hooks are keyed by event name. Only `command` is required. `matcher` applies to
+the tool events (`PreToolUse`, `PostToolUse`) and is ignored elsewhere; omit it
+to match all tools.
 
 ### PreToolUse
 
@@ -187,25 +206,67 @@ stuff, and so on.
 **Matched against**: the tool name (e.g. `bash`, `edit`, `write`,
 `mcp_github_create_pull_request`).
 
-> [!NOTE]
-> Event names are case insensitive and snake-caseable, so `PreToolUse`,
-> `pretooluse`, `PRETOOLUSE`, `pre_tool_use`, and `PRE_TOOL_USE` all work.
-
 **Scope**: `PreToolUse` only fires on the **top-level agent's** tool calls.
 Sub-agents (the `agent` task tool, `agentic_fetch`, etc.) run without hook
 interception so a single delegated turn doesn't trigger your hook N times. The
 outer sub-agent tool call itself _is_ hooked, so policy like "never let the
 agent spawn sub-agents" still works.
 
-Hooks are keyed by event name. Only `command` is required, and you can omit
-`matcher` to match all tools.
+### PostToolUse
+
+Fires after a tool call completes, with the tool's result (`tool_response`:
+content + error flag) in the payload. The tool already ran, so a hook can't
+undo it — instead, `exit 2` (or `decision: "deny"`/`"block"`) **appends the
+hook's reason to the tool result** so the model sees the feedback and can
+react (think "you edited a Go file, now run gofumpt"). `context` is appended
+the same way without the blocking framing, and `halt`/exit 49 still ends the
+turn after this call. `updated_input` is meaningless here and ignored.
+
+**Matched against**: the tool name, same semantics as `PreToolUse`. The
+`tool_input` in the payload is the input the tool _actually ran with_ —
+including any `PreToolUse` rewrite. Same top-level-agent scope as
+`PreToolUse`; a `PreToolUse` deny means the tool never ran, so `PostToolUse`
+does not fire for it.
+
+### UserPromptSubmit
+
+Fires when you submit a prompt, before it is persisted or sent to the model —
+this covers the TUI, `crush run`, and server clients alike. `exit 2` (or
+`decision: "deny"`/`"block"`) **aborts the turn**: no user message is stored,
+nothing reaches the LLM, and the reason surfaces as the error you see.
+`context` (or, Claude Code-style, any plain non-JSON stdout) is **appended to
+the prompt** so the model sees it — great for injecting the current branch,
+ticket context, or reference notes into every request.
+
+### Stop
+
+Fires when the top-level agent finishes its turn normally and is about to go
+idle — not on user cancel, not on errors, and not between queued prompts (the
+last turn of the chain fires it). `exit 2` (or `decision: "deny"`/`"block"`)
+**keeps the agent working**: the hook's reason is sent back as a follow-up
+prompt (so make it actionable — "the tests you wrote are failing, run them and
+fix the failures").
+
+The payload carries `stop_hook_active`, which is `true` when the finishing
+turn was itself caused by a Stop-hook block. Check it in your hook to decide
+whether to let the agent stop; Crush also enforces it — a hook that blocks
+again on a continuation turn is ignored, so a stubborn hook can't run the
+agent forever.
+
+### SubagentStop
+
+Same idea as `Stop`, but fires when a sub-agent run (the `agent` task tool or
+`agentic_fetch`) completes. A block sends the reason back into the same
+sub-agent session as a follow-up prompt, at most once — the re-fire carries
+`stop_hook_active: true` and cannot block again.
 
 ## Building Hooks
 
 When a hook fires, Crush:
 
-1. Filters hooks whose `matcher` regex matches the tool name (no matcher = match
-   all).
+1. Filters the event's hooks by their `matcher` regex against the tool name
+   (no matcher = match all; events without a tool name skip this step and run
+   every hook configured for the event).
 2. Deduplicates by `command` (identical commands run once).
 3. Runs all matching hooks **in parallel** through Crush's embedded POSIX
    shell (see [Execution model](#execution-model)).
@@ -575,9 +636,14 @@ process.stdin.on("end", () => {
 
 Crush hooks are broadly compatible with [Claude Code
 hooks](https://docs.claude.com/en/docs/claude-code/hooks): the config shape,
-stdin payload, output envelope, and exit codes line up so most Claude Code
-hooks run under Crush unchanged. This document covers the Crush-specific API
-only — anything not documented here isn't guaranteed to work.
+stdin payload (including `hook_event_name`, `tool_name`, `tool_input`,
+`tool_response`, `prompt`, and `stop_hook_active`), output envelope, and exit
+codes line up so most Claude Code hooks run under Crush unchanged. Claude
+Code's `decision` vocabulary (`"approve"`/`"block"`) is accepted alongside
+Crush's (`"allow"`/`"deny"`), and its `hookSpecificOutput` envelope
+(`permissionDecision`, `updatedInput`, `additionalContext`) is understood
+too. This document covers the Crush-specific API only — anything not
+documented here isn't guaranteed to work.
 
 One intentional divergence: Crush treats `updated_input` as a shallow-merge
 patch against the original `tool_input` rather than a full replacement. Keys
@@ -625,6 +691,9 @@ Present in every hook event:
   // string. Hook event name.
   "event": "PreToolUse",
 
+  // string. Same value as event, under Claude Code's field name.
+  "hook_event_name": "PreToolUse",
+
   // string. Current session ID.
   "session_id": "313909e",
 
@@ -648,6 +717,53 @@ Extends the common payload:
   "tool_input": {
     "command": "npm test",
   },
+}
+```
+
+### Stdin payload — PostToolUse
+
+Extends the PreToolUse payload (note that `tool_input` reflects any
+`updated_input` rewrite — it's what the tool actually ran with):
+
+```jsonc
+{
+  // ...common and PreToolUse fields...
+
+  // object. The executed tool's outcome.
+  "tool_response": {
+    // string. The result content the model will see.
+    "content": "…",
+
+    // boolean. Whether the tool reported an error.
+    "is_error": false,
+  },
+}
+```
+
+### Stdin payload — UserPromptSubmit
+
+Extends the common payload:
+
+```jsonc
+{
+  // ...common fields...
+
+  // string. The prompt as the user submitted it.
+  "prompt": "fix the login flow",
+}
+```
+
+### Stdin payload — Stop / SubagentStop
+
+Extends the common payload:
+
+```jsonc
+{
+  // ...common fields...
+
+  // boolean. True when this turn was itself started by a Stop-hook
+  // block. Check it to avoid keeping the agent running forever.
+  "stop_hook_active": false,
 }
 ```
 
@@ -686,7 +802,8 @@ Extends the common envelope:
   // "allow" | "deny" | null. null/omitted = no opinion, the tool still goes
   // through the normal permission prompt. "allow" is affirmative: pre-approves
   // the tool call and bypasses the prompt. "deny" blocks the call; the model
-  // sees the error and may try something else.
+  // sees the error and may try something else. Claude Code's "approve" and
+  // "block" are accepted as aliases.
   "decision": "allow",
 
   // object. Shallow-merge patch against tool_input. Nested objects are
@@ -697,17 +814,37 @@ Extends the common envelope:
 }
 ```
 
+### Output envelope — per-event `decision` meaning
+
+Every event accepts the same envelope; `decision: "deny"` (alias `"block"`)
+just lands differently because each event blocks a different thing:
+
+- **PreToolUse** — the tool call never runs; `reason` goes to the model.
+- **PostToolUse** — the tool already ran; `reason` is appended to the tool
+  result as feedback the model sees. `updated_input` is ignored.
+- **UserPromptSubmit** — the turn is aborted before anything is stored or
+  sent; `reason` is the error the user sees. On this event, plain non-JSON
+  stdout is treated as `context` (which is appended to the prompt).
+- **Stop / SubagentStop** — the agent (or sub-agent) doesn't stop: `reason`
+  is sent back as a follow-up prompt, so it must be non-empty and actionable.
+  Ignored when `stop_hook_active` is already true.
+
+`decision: "allow"` only has an effect on `PreToolUse` (it pre-approves the
+permission prompt); elsewhere it's the same as no opinion.
+
 ### Exit codes
 
-| Code  | Meaning                                                                  |
-| ----- | ------------------------------------------------------------------------ |
-| `0`   | Success. Stdout is parsed as the output envelope.                        |
-| `2`   | Block this tool call. Stderr becomes the deny reason. Stdout is ignored. |
-| `49`  | Halt the whole turn. Stderr becomes the halt reason. Stdout is ignored.  |
-| other | Non-blocking error. Logged and ignored; the tool call proceeds.          |
+| Code  | Meaning                                                                     |
+| ----- | --------------------------------------------------------------------------- |
+| `0`   | Success. Stdout is parsed as the output envelope.                           |
+| `2`   | Block (same as `decision: "deny"`). Stderr becomes the reason. Stdout is ignored. |
+| `49`  | Halt the whole turn. Stderr becomes the halt reason. Stdout is ignored.     |
+| other | Non-blocking error. Logged and ignored; the action proceeds.                |
 
-Exit `2` only applies to events that can block something. On events where
-there's nothing to block, it's treated as a non-blocking error.
+Exit `2` means whatever "deny" means on the firing event (see the table
+above). Exit `49` is only meaningful mid-turn (`PreToolUse`/`PostToolUse` end
+the turn after the current call; `UserPromptSubmit` aborts it); on the stop
+events the turn is already over and halting is a no-op.
 
 ### Aggregation
 

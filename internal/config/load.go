@@ -1239,11 +1239,23 @@ func isAppleTerminal() bool { return os.Getenv("TERM_PROGRAM") == "Apple_Termina
 
 // normalizeHookEvent maps user-provided event names to their canonical
 // form. Matching is case-insensitive and accepts snake_case variants
-// (e.g. "pre_tool_use" → "PreToolUse").
+// (e.g. "pre_tool_use" → "PreToolUse"). The canonical names mirror the
+// hooks package's Event* constants (spelled out here because
+// internal/hooks imports this package). Unknown event names pass through
+// unchanged and simply never fire, so configs shared with other tools
+// (e.g. Claude Code events Crush doesn't support) still load.
 func normalizeHookEvent(name string) string {
 	switch strings.ToLower(strings.ReplaceAll(name, "_", "")) {
 	case "pretooluse":
 		return "PreToolUse"
+	case "posttooluse":
+		return "PostToolUse"
+	case "userpromptsubmit":
+		return "UserPromptSubmit"
+	case "stop":
+		return "Stop"
+	case "subagentstop":
+		return "SubagentStop"
 	default:
 		return name
 	}
