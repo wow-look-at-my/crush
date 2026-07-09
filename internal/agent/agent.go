@@ -41,6 +41,7 @@ import (
 	"github.com/charmbracelet/crush/internal/agent/tools/mcp"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/csync"
+	"github.com/charmbracelet/crush/internal/hooks"
 	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/crush/internal/pubsub"
 	"github.com/charmbracelet/crush/internal/session"
@@ -124,6 +125,12 @@ type SessionAgentCall struct {
 	// paths treat as covered by any present mark, preserving the
 	// pre-sequence behavior.
 	acceptSeq uint64
+	// stopHookContinuation marks a turn started by a Stop hook that
+	// blocked the previous turn from ending (the hook's reason fed back
+	// as a follow-up prompt). The Stop hooks fired when such a turn
+	// finishes carry stop_hook_active=true, and a repeat block is
+	// ignored so hooks can't keep the agent running forever.
+	stopHookContinuation bool
 }
 
 type SessionAgent interface {
@@ -132,6 +139,10 @@ type SessionAgent interface {
 	SetModels(large Model, small Model)
 	SetTools(tools []fantasy.AgentTool)
 	SetSystemPrompt(systemPrompt string)
+	// SetSystemPromptSuffix sets a per-mode addition appended to the
+	// system prompt at the start of each run (e.g. the plan-mode
+	// instructions). Empty removes any previous suffix.
+	SetSystemPromptSuffix(suffix string)
 	Cancel(sessionID string)
 	CancelAll()
 	IsSessionBusy(sessionID string) bool
@@ -156,6 +167,12 @@ type sessionAgent struct {
 	smallModel         *csync.Value[Model]
 	systemPromptPrefix *csync.Value[string]
 	systemPrompt       *csync.Value[string]
+	// systemPromptSuffix is the permission-mode addition appended to
+	// the system prompt when a run starts. The coordinator refreshes it
+	// from the current mode before every run (UpdateModels); like the
+	// prompt itself it is captured at run start, so a mid-run mode
+	// switch affects the next run.
+	systemPromptSuffix *csync.Value[string]
 	tools              *csync.Slice[fantasy.AgentTool]
 
 	isSubAgent           bool
@@ -165,6 +182,10 @@ type sessionAgent struct {
 	isYolo               bool
 	notify               pubsub.Publisher[notify.Notification]
 	runComplete          pubsub.Publisher[notify.RunComplete]
+	// hooks fires Stop hooks when a turn finishes normally. Nil for
+	// sub-agents (the coordinator fires SubagentStop from the caller's
+	// side instead) and when no hooks are configured.
+	hooks *hooks.Runner
 
 	messageQueue   *csync.Map[string, []SessionAgentCall]
 	activeRequests *csync.Map[string, context.CancelFunc]
@@ -220,6 +241,7 @@ type SessionAgentOptions struct {
 	Tools                []fantasy.AgentTool
 	Notify               pubsub.Publisher[notify.Notification]
 	RunComplete          pubsub.Publisher[notify.RunComplete]
+	Hooks                *hooks.Runner
 }
 
 func NewSessionAgent(
@@ -230,6 +252,7 @@ func NewSessionAgent(
 		smallModel:           csync.NewValue(opts.SmallModel),
 		systemPromptPrefix:   csync.NewValue(opts.SystemPromptPrefix),
 		systemPrompt:         csync.NewValue(opts.SystemPrompt),
+		systemPromptSuffix:   csync.NewValue(""),
 		isSubAgent:           opts.IsSubAgent,
 		sessions:             opts.Sessions,
 		messages:             opts.Messages,
@@ -238,6 +261,7 @@ func NewSessionAgent(
 		isYolo:               opts.IsYolo,
 		notify:               opts.Notify,
 		runComplete:          opts.RunComplete,
+		hooks:                opts.Hooks,
 		messageQueue:         csync.NewMap[string, []SessionAgentCall](),
 		activeRequests:       csync.NewMap[string, context.CancelFunc](),
 		dispatchMu:           csync.NewMap[string, *sync.Mutex](),
@@ -659,6 +683,10 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 
 	if s := instructions.String(); s != "" {
 		systemPrompt += "\n\n<mcp-instructions>\n" + s + "\n</mcp-instructions>"
+	}
+
+	if suffix := a.systemPromptSuffix.Get(); suffix != "" {
+		systemPrompt += "\n\n" + suffix
 	}
 
 	if len(agentTools) > 0 {
@@ -1169,6 +1197,19 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		}
 	}
 
+	// Fire Stop hooks when the agent is about to go idle: the turn
+	// finished normally and nothing is queued (a queued prompt means the
+	// conversation continues, so the chain's final turn fires them). A
+	// blocking hook feeds its reason back as a follow-up prompt through
+	// the queue, and the recursion below runs it as a continuation turn
+	// (same RunID, stop_hook_active=true). This runs before the
+	// active-request release so a user cancel can still abort in-flight
+	// hook commands through genCtx.
+	if cont, ok := a.runStopHooks(genCtx, call); ok {
+		queued, _ := a.messageQueue.Get(call.SessionID)
+		a.messageQueue.Set(call.SessionID, append(queued, cont))
+	}
+
 	// Release active request before publishing the notification.
 	// TUI handlers poll IsSessionBusy() and only re-evaluate when a
 	// tea.Msg arrives, so the cleanup must precede the notify or
@@ -1287,6 +1328,56 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		a.publishRunComplete(ctx, call, complete)
 	}
 	return a.Run(ctx, firstQueuedMessage)
+}
+
+// runStopHooks fires Stop hooks for a turn that finished normally and
+// returns the continuation call to enqueue when a hook blocked the stop,
+// or ok=false when the turn should end. It is a no-op when no hooks are
+// configured, the run was cancelled, or a queued prompt is already going
+// to continue the conversation.
+//
+// Loop guard: a continuation turn carries stopHookContinuation, which is
+// surfaced to hooks as stop_hook_active=true; if a hook blocks again on
+// such a turn the block is logged and ignored, so a misbehaving hook can
+// only extend the agent by one turn, mirroring Claude Code's semantics.
+func (a *sessionAgent) runStopHooks(ctx context.Context, call SessionAgentCall) (SessionAgentCall, bool) {
+	if a.hooks == nil || ctx.Err() != nil {
+		return SessionAgentCall{}, false
+	}
+	if queued, _ := a.messageQueue.Get(call.SessionID); len(queued) > 0 {
+		return SessionAgentCall{}, false
+	}
+
+	result, err := a.hooks.Run(ctx, hooks.Event{
+		Name:           hooks.EventStop,
+		SessionID:      call.SessionID,
+		StopHookActive: call.stopHookContinuation,
+	})
+	if err != nil {
+		slog.Warn("Stop hook execution error; stopping normally", "error", err)
+	}
+	if result.Decision != hooks.DecisionDeny || ctx.Err() != nil {
+		return SessionAgentCall{}, false
+	}
+	if call.stopHookContinuation {
+		slog.Warn("Stop hook blocked again on a stop-hook continuation; stopping anyway")
+		return SessionAgentCall{}, false
+	}
+	if result.Reason == "" {
+		slog.Warn("Stop hook blocked without a reason; stopping anyway")
+		return SessionAgentCall{}, false
+	}
+
+	cont := call
+	cont.Prompt = result.Reason
+	cont.stopHookContinuation = true
+	// The original attachments were already delivered with the turn that
+	// just finished; re-sending them would duplicate user content.
+	cont.Attachments = nil
+	// The accept reservation (if any) was consumed at dispatch; the
+	// queued-recursion handoff reserves a fresh one for the continuation.
+	cont.Accepted = nil
+	return cont, true
 }
 
 func (a *sessionAgent) Summarize(ctx context.Context, sessionID string, opts fantasy.ProviderOptions) error {
@@ -2017,6 +2108,10 @@ func (a *sessionAgent) SetModels(large Model, small Model) {
 
 func (a *sessionAgent) SetTools(tools []fantasy.AgentTool) {
 	a.tools.SetSlice(tools)
+}
+
+func (a *sessionAgent) SetSystemPromptSuffix(suffix string) {
+	a.systemPromptSuffix.Set(suffix)
 }
 
 func (a *sessionAgent) SetSystemPrompt(systemPrompt string) {

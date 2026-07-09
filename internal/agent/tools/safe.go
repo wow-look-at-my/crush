@@ -74,6 +74,27 @@ func containsCommandChaining(s string) bool {
 	})
 }
 
+// IsSafeReadOnly reports whether command matches the safe read-only
+// command allowlist: it starts with one of the safeCommands prefixes (at
+// a word boundary, case-insensitively) and contains no chaining or
+// substitution metacharacters. The bash tool skips the permission prompt
+// for such commands; custom command !`cmd` expansion reuses the same
+// check.
+func IsSafeReadOnly(command string) bool {
+	if containsCommandChaining(command) {
+		return false
+	}
+	cmdLower := strings.ToLower(command)
+	for _, safe := range safeCommands {
+		if strings.HasPrefix(cmdLower, safe) {
+			if len(cmdLower) == len(safe) || cmdLower[len(safe)] == ' ' || cmdLower[len(safe)] == '-' {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func init() {
 	if runtime.GOOS == "windows" {
 		safeCommands = append(

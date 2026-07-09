@@ -154,6 +154,13 @@ type LSResponseMetadata struct {
 	Truncated     bool `json:"truncated"`
 }
 
+// PlanExitToolName is the name of the plan_exit tool.
+const PlanExitToolName = tools.PlanExitToolName
+
+// PlanExitPermissionsParams represents the permission parameters for the
+// plan_exit tool.
+type PlanExitPermissionsParams = tools.PlanExitPermissionsParams
+
 const MultiEditToolName = "multiedit"
 
 // MultiEditOperation represents a single edit operation in a multi-edit.

@@ -52,6 +52,7 @@ type (
 	ActionTogglePills             struct{}
 	ActionExternalEditor          struct{}
 	ActionToggleYoloMode          struct{}
+	ActionCyclePermissionMode     struct{}
 	ActionToggleNotifications     struct{}
 	ActionSelectNotificationStyle struct {
 		Style string
@@ -70,12 +71,21 @@ type (
 		Permission permission.PermissionRequest
 		Action     PermissionAction
 	}
+	// ActionRestoreCheckpoint is sent when the user confirms rolling
+	// the session's file changes back to the state they had just
+	// before the given message was sent.
+	ActionRestoreCheckpoint struct {
+		SessionID string
+		MessageID string
+	}
 	// ActionRunCustomCommand is a message to run a custom command.
 	ActionRunCustomCommand struct {
-		Content   string
-		Arguments []commands.Argument
-		Args      map[string]string // Actual argument values
-		Skill     *skills.Skill     // Set when this is a skill command
+		Content      string
+		Arguments    []commands.Argument
+		Args         map[string]string // Actual argument values
+		ArgumentHint string            // Frontmatter argument-hint, shown in the arguments dialog
+		AllowedTools []string          // Frontmatter allowed-tools, pre-approving inline !`cmd` runs
+		Skill        *skills.Skill     // Set when this is a skill command
 	}
 	// ActionAttachSkill is sent when a skill is selected from the commands
 	// dialog to be attached to the conversation as a markdown attachment.

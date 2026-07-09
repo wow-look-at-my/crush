@@ -341,6 +341,28 @@ func (w *ClientWorkspace) PermissionSetSkipRequests(skip bool) {
 	_ = w.client.SetPermissionsSkipRequests(context.Background(), w.workspaceID(), skip)
 }
 
+// PermissionRequest is unsupported in client mode: the client/server
+// proto has no endpoint to raise a request from the client side. Custom
+// command !`cmd` segments that would need an interactive prompt fail
+// with this error; safe-listed and allowed-tools pre-approved commands
+// still run. See the Workspace interface docs.
+func (w *ClientWorkspace) PermissionRequest(ctx context.Context, req permission.CreatePermissionRequest) (bool, error) {
+	return false, errors.New("interactive permission requests are not supported in client/server mode")
+}
+
+// PermissionMode reports the default mode: the client/server proto has
+// no permission-mode endpoint yet, so remote workspaces run in whatever
+// mode their server-side config selected and cannot be switched from
+// the client. See the Workspace interface docs.
+func (w *ClientWorkspace) PermissionMode() permission.Mode {
+	return permission.ModeDefault
+}
+
+// PermissionSetMode is a no-op in client mode; see PermissionMode.
+func (w *ClientWorkspace) PermissionSetMode(mode permission.Mode) {
+	slog.Debug("Permission modes are not supported in client/server mode", "mode", mode)
+}
+
 // -- FileTracker --
 
 func (w *ClientWorkspace) FileTrackerRecordRead(ctx context.Context, sessionID, path string) {
@@ -367,6 +389,19 @@ func (w *ClientWorkspace) ListSessionHistory(ctx context.Context, sessionID stri
 		return nil, err
 	}
 	return protoToFiles(files), nil
+}
+
+// SessionRestorePlan is not supported in client/server mode: the proto
+// has no checkpoint-restore endpoint yet, and the files live on the
+// server's filesystem. See the Workspace interface docs.
+func (w *ClientWorkspace) SessionRestorePlan(ctx context.Context, sessionID, messageID string) (history.RestorePlan, error) {
+	return history.RestorePlan{}, errors.New("checkpoint restore is not supported in client/server mode")
+}
+
+// SessionRestoreFiles is not supported in client/server mode; see
+// [ClientWorkspace.SessionRestorePlan].
+func (w *ClientWorkspace) SessionRestoreFiles(ctx context.Context, sessionID, messageID string) (history.RestoreResult, error) {
+	return history.RestoreResult{}, errors.New("checkpoint restore is not supported in client/server mode")
 }
 
 // -- LSP --

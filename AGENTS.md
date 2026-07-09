@@ -24,8 +24,8 @@ internal/
     provider.go                    Provider configuration and model resolution
   agent/
     agent.go                       SessionAgent: runs LLM conversations per session
-    coordinator.go                 Coordinator: manages named agents ("coder", "task")
-    hooked_tool.go                 Decorator that runs PreToolUse hooks before tool execution
+    coordinator.go                 Coordinator: manages named agents ("coder", "task", custom agents)
+    hooked_tool.go                 Decorator running PreToolUse/PostToolUse hooks around tool execution
     prompts.go                     Loads Go-template system prompts
     templates/                     System prompt templates (coder.md.tpl, task.md.tpl, etc.)
     tools/                         All built-in tools (bash, edit, view, grep, glob, etc.)
@@ -41,7 +41,7 @@ internal/
     migrations/                    Schema migrations
   lsp/                             LSP client manager, auto-discovery, on-demand startup
   ui/                              Bubble Tea v2 TUI (see internal/ui/AGENTS.md)
-  permission/                      Tool permission checking and allow-lists
+  permission/                      Tool permission checking, allow-lists, and permission modes
   skills/                          Skill file discovery and loading
   shell/                           Bash command execution with background job support
   event/                           Telemetry (PostHog)
@@ -75,12 +75,34 @@ internal/
   generated code in `internal/db/`. Migrations in `internal/db/migrations/`.
 - **Pub/sub**: `internal/pubsub` for decoupled communication between agent,
   UI, and services.
-- **Hooks**: User-defined shell commands in `crush.json` that fire before
-  tool execution. The engine (`internal/hooks/`) is independent of fantasy
-  and agent — it takes inputs, runs commands, returns decisions. The
+- **Hooks**: User-defined shell commands in `crush.json` that fire on
+  agent lifecycle events: PreToolUse, PostToolUse, UserPromptSubmit, Stop,
+  and SubagentStop. The engine (`internal/hooks/`) is independent of fantasy
+  and agent — it takes an Event, runs commands, returns decisions. The
   `hookedTool` decorator in `internal/agent/hooked_tool.go` wraps tools at
-  the coordinator level. Hooks run before permission checks. See
-  `HOOKS.md` for the user-facing protocol.
+  the coordinator level (PreToolUse runs before permission checks);
+  UserPromptSubmit and SubagentStop fire from the coordinator's run paths,
+  Stop from the session agent. See `docs/hooks/` for the user-facing
+  protocol.
+- **Custom agents**: named sub-agent definitions (prompt, toolset, model)
+  from the `agents` config key or markdown files in
+  `<project>/.crush/agents/` / `~/.config/crush/agents/`
+  (`internal/config/agents.go`), merged with the built-ins by
+  `Config.SetupAgents` and dispatched by name through the `agent` tool
+  (`internal/agent/agent_tool.go`). Read-only toolset and no MCP tools
+  unless granted; `coder`/`task` names are reserved.
+- **Custom commands**: markdown prompts in `~/.config/crush/commands/` /
+  `<project>/.crush/commands/` with optional YAML frontmatter
+  (description, argument-hint, allowed-tools), `$ARGS` placeholders,
+  permission-gated inline `` !`cmd` `` execution, and `@file` context
+  references (`internal/commands`, expansion wired from the TUI in
+  `internal/ui/model/customcmd.go`). Expansion order: $ARGS → ! → @,
+  single-pass tokenization (substituted output is never rescanned).
+- **Checkpoint restore**: the file versions recorded per session double
+  as checkpoints. The pure plan engine and undoable disk apply live in
+  `internal/history/restore.go` (`ComputeRestorePlan` /
+  `ApplyRestorePlan`); `app.SessionRestoreFiles` wires them up and the
+  TUI drives it from the commands palette (`internal/ui/dialog/restore.go`).
 - **CGO disabled**: builds with `CGO_ENABLED=0` and
   `GOEXPERIMENT=greenteagc`.
 

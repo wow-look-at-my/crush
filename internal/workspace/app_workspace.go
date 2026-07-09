@@ -252,6 +252,18 @@ func (w *AppWorkspace) PermissionSetSkipRequests(skip bool) {
 	w.app.Permissions.SetSkipRequests(skip)
 }
 
+func (w *AppWorkspace) PermissionRequest(ctx context.Context, req permission.CreatePermissionRequest) (bool, error) {
+	return w.app.Permissions.Request(ctx, req)
+}
+
+func (w *AppWorkspace) PermissionMode() permission.Mode {
+	return w.app.Permissions.Mode()
+}
+
+func (w *AppWorkspace) PermissionSetMode(mode permission.Mode) {
+	w.app.Permissions.SetMode(mode)
+}
+
 // -- FileTracker --
 
 func (w *AppWorkspace) FileTrackerRecordRead(ctx context.Context, sessionID, path string) {
@@ -270,6 +282,14 @@ func (w *AppWorkspace) FileTrackerListReadFiles(ctx context.Context, sessionID s
 
 func (w *AppWorkspace) ListSessionHistory(ctx context.Context, sessionID string) ([]history.File, error) {
 	return w.app.History.ListBySession(ctx, sessionID)
+}
+
+func (w *AppWorkspace) SessionRestorePlan(ctx context.Context, sessionID, messageID string) (history.RestorePlan, error) {
+	return w.app.SessionRestorePlan(ctx, sessionID, messageID)
+}
+
+func (w *AppWorkspace) SessionRestoreFiles(ctx context.Context, sessionID, messageID string) (history.RestoreResult, error) {
+	return w.app.SessionRestoreFiles(ctx, sessionID, messageID)
 }
 
 // -- LSP --

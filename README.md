@@ -465,6 +465,96 @@ permissions. Use this with care.
 You can also skip all permission prompts entirely by running Crush with the
 `--yolo` flag. Be very, very careful with this feature.
 
+### Permission Modes
+
+Crush also has three permission modes, cycled at runtime with
+<kbd>shift+tab</kbd> (or via the commands palette):
+
+- **default**: every gated tool call prompts as usual.
+- **accept_edits**: file edits (`edit`, `multiedit`, `write`) inside the
+  working directory are auto-approved; everything else still prompts.
+- **plan**: read-only planning mode. The agent loses its mutating tools
+  (including `bash`) and gains a `plan_exit` tool: when its plan is ready it
+  presents it for approval, and approving returns Crush to the default mode so
+  it can implement.
+
+The editor prompt shows the active mode (`E` for accept edits, `P` for plan).
+Tool availability updates when the next message starts; the permission policy
+itself applies immediately. Modes are independent of `--yolo`, which skips all
+permission handling.
+
+Set the startup mode in your config, or per invocation with
+`--permission-mode`:
+
+```json
+{
+  "$schema": "https://charm.land/crush.json",
+  "permissions": {
+    "default_mode": "plan"
+  }
+}
+```
+
+### Custom Agents
+
+Crush can delegate focused tasks to sub-agents via its `agent` tool. Out of
+the box that's a single read-only search agent, but you can define your own
+named agents — each with its own prompt, toolset, and model — and the model
+will pick between them by name.
+
+Define agents in your config:
+
+```json
+{
+  "$schema": "https://charm.land/crush.json",
+  "agents": {
+    "reviewer": {
+      "description": "Reviews a diff or file for correctness and style issues.",
+      "prompt": "You are a meticulous code reviewer. Report concrete problems with file:line references.",
+      "model": "small"
+    },
+    "fixer": {
+      "description": "Applies small well-scoped fixes.",
+      "prompt_file": "./prompts/fixer.md",
+      "allowed_tools": ["view", "grep", "glob", "edit", "write"],
+      "allowed_mcp": { "context7": [] }
+    }
+  }
+}
+```
+
+Or as markdown files with YAML frontmatter, in `<project>/.crush/agents/` or
+`~/.config/crush/agents/` (the file name is the agent name unless the
+frontmatter sets one):
+
+```markdown
+---
+description: Reviews a diff or file for correctness and style issues.
+tools: view, grep, glob
+model: small
+---
+
+You are a meticulous code reviewer. Report concrete problems with file:line
+references.
+```
+
+Some details:
+
+- `description` is required — it's how the model decides which agent to use.
+- Agents are **read-only by default**: without `allowed_tools` an agent gets
+  the same read-only toolset as the built-in search agent, and no MCP tools
+  unless `allowed_mcp` grants them. You may grant mutating tools (`edit`,
+  `write`, `bash`, …); permission prompts and plan mode still apply to those
+  tool calls as usual.
+- `model` picks between your configured `large` (default) and `small` models.
+- `prompt` is used verbatim as the agent's system prompt; `prompt_file` loads
+  it from a file instead. When neither is set the built-in task prompt is
+  used.
+- The names `coder` and `task` are reserved, and agents can't be given the
+  `agent` tool (no nested sub-agents).
+- When the same name is defined more than once, `crush.json` wins over
+  project agent files, which win over user-level ones.
+
 ### Disabling Built-In Tools
 
 If you'd like to prevent Crush from using certain built-in tools entirely, you
@@ -584,6 +674,107 @@ disable-model-invocation: true
 ```
 
 Skills with `disable-model-invocation` won't appear in the model's available skills list but can still be invoked manually by users.
+
+### Custom Commands
+
+Custom commands are reusable prompts stored as markdown files and invoked from
+the commands palette (<kbd>Ctrl+P</kbd>, under **User**). Crush loads them
+from:
+
+- `$XDG_CONFIG_HOME/crush/commands/` and `~/.crush/commands/` (shown with a
+  `user:` prefix)
+- `<project>/.crush/commands/` (shown with a `project:` prefix)
+
+Each `.md` file is one command; subdirectories namespace the name
+(`review/security.md` becomes `user:review:security`). The file body is sent
+as the prompt. `$NAME`-style placeholders (uppercase) become required
+arguments collected in a dialog before the command runs.
+
+#### Frontmatter
+
+A command file may start with optional YAML frontmatter. Files without
+frontmatter behave exactly as before, and unknown keys are ignored:
+
+```markdown
+---
+description: Summarize recent changes on a branch
+argument-hint: "[branch-name]"
+allowed-tools: Bash(git log:*), Bash(git diff:*)
+---
+Summarize the changes on branch $BRANCH:
+
+- Recent commits: !`git log --oneline -20 $BRANCH`
+- Style guide: @docs/style.md
+```
+
+- `description` shows next to the command in the palette.
+- `argument-hint` shows in the argument-entry dialog.
+- `allowed-tools` pre-approves inline bash (see below). It accepts a YAML
+  list or a comma-separated string of Claude Code style patterns: `Bash`
+  or `Bash(*)` (any command), `Bash(git status)` (exact), and
+  `Bash(git log:*)` (prefix). Prefix patterns must end at a word boundary,
+  and a command containing chaining metacharacters (`;`, `|`, `&&`, `` ` ``,
+  `$(`) never pre-approves — both slightly stricter than Claude Code.
+
+#### Inline bash with `` !`cmd` ``
+
+Segments of the form `` !`command` `` execute when the command is invoked,
+and their output is substituted in place — great for pulling live context
+(git status, issue details) into a prompt. Execution runs through Crush's
+shell in the project root and is permission-gated like the bash tool:
+
+- Safe read-only commands (`git status`, `ls`, ...) run without asking.
+- Commands matching an `allowed-tools` pattern are pre-approved.
+- Everything else raises the regular permission dialog; `--yolo` skips
+  prompts entirely, while accept-edits mode does **not** auto-approve bash
+  and plan mode denies non-read-only commands.
+- A denied (or failing-to-start) command aborts the whole invocation.
+
+Output is capped at 30,000 characters with a truncation note; a non-zero
+exit substitutes the output plus the exit code and stderr so the model sees
+the failure. When attached to a remote workspace (client/server mode) the
+interactive prompt isn't available, so only safe-listed and pre-approved
+commands run.
+
+#### File references with `@path`
+
+Tokens like `@src/main.go` (at a word boundary, path relative to the
+project root; `~` and absolute paths also work) include the referenced
+file when the command runs: the mention stays in the prose and the file
+content is appended as a delimited `<file path="...">` block. A directory
+reference appends a brief listing instead. Files are capped at 200KB with
+a truncation note, repeated references are included once, and a missing
+path aborts the invocation with an error rather than silently sending a
+broken prompt.
+
+#### Expansion order
+
+Frontmatter is stripped at load time, then on invocation: `$ARGS`
+substitution → `` !`cmd` `` execution → `@file` expansion. The body is
+tokenized once, up front, and substituted text is never rescanned — a
+command's output can't smuggle in `@file` reads, and file content can't
+inject `` !`cmd` `` executions. Argument values *are* substituted into
+`` !`cmd` `` text before execution (so `` !`gh issue view $ISSUE` ``
+works); the permission prompt always shows the final command.
+
+### Checkpoints
+
+Crush records a version of every file the agent edits, writes, or creates —
+including the file's pre-edit content the first time a session touches it.
+Those versions double as checkpoints: you can roll a session's file changes
+back to how they were just before any of your messages.
+
+Open the commands palette (<kbd>Ctrl+P</kbd>) and pick **Restore Files to
+Checkpoint**.
+Choose a message (the most recent one — the "last checkpoint" — is
+preselected), review the files that will change, and confirm. Files edited
+after that point are written back to their checkpoint content, and files that
+didn't exist yet are deleted. Restores never touch git, never write outside
+the working directory, and are refused while the agent is running.
+
+Restores are themselves undoable: before applying, each file's current
+content is recorded as a new version, so restoring to a later checkpoint
+rolls the changes forward again.
 
 ### Desktop notifications
 

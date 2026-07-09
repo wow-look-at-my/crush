@@ -248,6 +248,10 @@ const (
 
 type Permissions struct {
 	AllowedTools []string `json:"allowed_tools,omitempty" jsonschema:"description=List of tools that don't require permission prompts,example=bash,example=view"`
+	// DefaultMode is the permission mode Crush starts in. It can be
+	// switched at runtime from the TUI (shift+tab) and overridden per
+	// invocation with --permission-mode.
+	DefaultMode string `json:"default_mode,omitempty" jsonschema:"description=Permission mode to start in: default asks for permission as usual; accept_edits auto-approves file edits inside the working directory; plan makes the agent read-only,enum=default,enum=accept_edits,enum=plan,default=default"`
 }
 
 type TrailerStyle string
@@ -509,27 +513,42 @@ func (l LSPConfig) ResolvedEnv(r VariableResolver) (map[string]string, error) {
 	return out, nil
 }
 
+// Agent is a named agent definition. The built-in coder and task agents
+// are always present; custom agents can be defined under the `agents`
+// config key or as markdown files (see LoadAgentFiles) and become
+// selectable through the `agent` tool.
 type Agent struct {
-	ID          string `json:"id,omitempty"`
-	Name        string `json:"name,omitempty"`
-	Description string `json:"description,omitempty"`
-	// This is the id of the system prompt used by the agent
-	Disabled bool `json:"disabled,omitempty"`
+	// The registry key. Derived from the config map key (or the agent
+	// file name); not user-settable.
+	ID string `json:"id,omitempty" jsonschema:"-"`
+	// Display name; defaults to the agent's key.
+	Name        string `json:"name,omitempty" jsonschema:"description=Display name for the agent. Defaults to the agent's key"`
+	Description string `json:"description,omitempty" jsonschema:"description=What this agent is for and when to use it. Required for custom agents; the model sees it when picking an agent"`
+	// Disabled excludes the agent from the registry.
+	Disabled bool `json:"disabled,omitempty" jsonschema:"description=Whether this agent is disabled,default=false"`
 
-	Model SelectedModelType `json:"model" jsonschema:"required,description=The model type to use for this agent,enum=large,enum=small,default=large"`
+	Model SelectedModelType `json:"model,omitempty" jsonschema:"description=The model type to use for this agent,enum=large,enum=small,default=large"`
+
+	// System prompt for a custom agent. Used verbatim (it is not a
+	// template). Empty means the built-in task prompt.
+	Prompt string `json:"prompt,omitempty" jsonschema:"description=System prompt for the agent; used verbatim. Defaults to the built-in task prompt when empty"`
+	// PromptFile reads the system prompt from a file at config load time.
+	// Mutually exclusive with Prompt.
+	PromptFile string `json:"prompt_file,omitempty" jsonschema:"description=Path to a file containing the system prompt. Relative paths resolve against the working directory. Mutually exclusive with prompt"`
 
 	// The available tools for the agent
-	//  if this is nil, all tools are available
-	AllowedTools []string `json:"allowed_tools,omitempty"`
+	//  if this is nil, all tools are available to the built-in agents
+	//  and custom agents fall back to the read-only toolset
+	AllowedTools []string `json:"allowed_tools,omitempty" jsonschema:"description=Tools this agent may use. A custom agent without this gets the read-only toolset,example=view,example=grep"`
 
 	// this tells us which MCPs are available for this agent
-	//  if this is empty all mcps are available
+	//  if this is nil all mcps are available (custom agents default to none)
 	//  the string array is the list of tools from the AllowedMCP the agent has available
 	//  if the string array is nil, all tools from the AllowedMCP are available
-	AllowedMCP map[string][]string `json:"allowed_mcp,omitempty"`
+	AllowedMCP map[string][]string `json:"allowed_mcp,omitempty" jsonschema:"description=MCP servers this agent may use; each maps to the tools allowed from that server (empty list = every tool). A custom agent without this gets no MCP tools"`
 
 	// Overrides the context paths for this agent
-	ContextPaths []string `json:"context_paths,omitempty"`
+	ContextPaths []string `json:"context_paths,omitempty" jsonschema:"-"`
 }
 
 type Tools struct {
@@ -573,8 +592,10 @@ func (t ToolGlob) GetTimeout() time.Duration {
 type HookConfig struct {
 	// Friendly display name shown in the TUI. Falls back to Command when empty.
 	Name string `json:"name,omitempty" jsonschema:"description=Friendly display name shown in the TUI for this hook"`
-	// Regex pattern tested against the tool name. Empty means match all.
-	Matcher string `json:"matcher,omitempty" jsonschema:"description=Regex pattern tested against the tool name. Empty means match all tools."`
+	// Regex pattern tested against the tool name on the tool events
+	// (PreToolUse/PostToolUse). Empty means match all; other events
+	// ignore the matcher.
+	Matcher string `json:"matcher,omitempty" jsonschema:"description=Regex pattern tested against the tool name on tool events (PreToolUse/PostToolUse). Empty means match all tools; other events ignore it."`
 	// Shell command to execute.
 	Command string `json:"command" jsonschema:"required,description=Shell command to execute when the hook fires"`
 	// Timeout in seconds. Default 30.
@@ -622,9 +643,13 @@ type Config struct {
 
 	Tools Tools `json:"tools,omitzero" jsonschema:"description=Tool configurations"`
 
-	Hooks map[string][]HookConfig `json:"hooks,omitempty" jsonschema:"description=User-defined shell commands that fire on hook events (e.g. PreToolUse)"`
+	Hooks map[string][]HookConfig `json:"hooks,omitempty" jsonschema:"description=User-defined shell commands that fire on hook events (PreToolUse / PostToolUse / UserPromptSubmit / Stop / SubagentStop)"`
 
-	Agents map[string]Agent `json:"-"`
+	// Agents holds the agent registry. Custom agents defined here (or in
+	// agent markdown files) are merged with the built-in coder and task
+	// agents by SetupAgents and become selectable through the `agent`
+	// tool. The keys `coder` and `task` are reserved.
+	Agents map[string]Agent `json:"agents,omitempty" jsonschema:"description=Custom agent definitions selectable via the agent tool. The names coder and task are reserved"`
 }
 
 // cloneForWrite returns a copy of c that the store's typed field mutators
@@ -751,7 +776,9 @@ func allToolNames() []string {
 		"sourcegraph",
 		"todos",
 		"view",
+		"web_search",
 		"write",
+		"plan_exit",
 		"list_mcp_resources",
 		"read_mcp_resource",
 	}
@@ -766,7 +793,7 @@ func resolveAllowedTools(allTools []string, disabledTools []string) []string {
 }
 
 func resolveReadOnlyTools(tools []string) []string {
-	readOnlyTools := []string{"glob", "grep", "ls", "sourcegraph", "view"}
+	readOnlyTools := []string{"glob", "grep", "ls", "sourcegraph", "view", "web_search"}
 	// filter to only include tools that are in allowedtools (include mode)
 	return filterSlice(tools, readOnlyTools, true)
 }
@@ -783,6 +810,12 @@ func filterSlice(data []string, mask []string, include bool) []string {
 	return filtered
 }
 
+// SetupAgents (re)builds the agent registry: the built-in coder and task
+// agents plus every enabled custom agent definition currently held in
+// c.Agents. It is idempotent — the built-ins are always rebuilt from
+// scratch and custom-agent resolution is stable under repetition — so it
+// is safe to call again after a reload or on a config that was already
+// set up.
 func (c *Config) SetupAgents() {
 	allowedTools := resolveAllowedTools(allToolNames(), c.Options.DisabledTools)
 
@@ -807,7 +840,49 @@ func (c *Config) SetupAgents() {
 			AllowedMCP: map[string][]string{},
 		},
 	}
+	for name, agent := range c.Agents {
+		if name == AgentCoder || name == AgentTask {
+			// Reserved keys: the built-ins above always win. Custom
+			// definitions using these names are rejected at load time by
+			// ValidateAgents; skipping here additionally keeps repeat
+			// SetupAgents calls from treating a previously resolved
+			// built-in as a custom agent.
+			continue
+		}
+		if agent.Disabled {
+			continue
+		}
+		agents[name] = resolveCustomAgent(name, agent, allowedTools)
+	}
 	c.Agents = agents
+}
+
+// resolveCustomAgent normalizes a custom agent definition into a registry
+// entry. A custom agent defaults to the same read-only toolset as the
+// task agent and to no MCP tools; explicit allowed_tools grants are still
+// subject to the global disabled_tools filter. Resolution is idempotent:
+// resolving an already resolved agent yields the same entry.
+func resolveCustomAgent(name string, agent Agent, allowedTools []string) Agent {
+	agent.ID = name
+	if agent.Name == "" {
+		agent.Name = name
+	}
+	if agent.Model != SelectedModelTypeSmall {
+		agent.Model = SelectedModelTypeLarge
+	}
+	if agent.AllowedTools == nil {
+		agent.AllowedTools = resolveReadOnlyTools(allowedTools)
+	} else if agent.AllowedTools = filterSlice(agent.AllowedTools, allowedTools, true); agent.AllowedTools == nil {
+		// Keep an explicitly empty (or fully disabled_tools-filtered)
+		// grant distinguishable from "not set" so repeat resolution does
+		// not fall back to the read-only default.
+		agent.AllowedTools = []string{}
+	}
+	if agent.AllowedMCP == nil {
+		// NO MCPs unless explicitly granted, mirroring the task agent.
+		agent.AllowedMCP = map[string][]string{}
+	}
+	return agent
 }
 
 func (c *ProviderConfig) TestConnection(resolver VariableResolver) error {

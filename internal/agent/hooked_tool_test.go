@@ -33,24 +33,36 @@ func (f *fakeTool) Run(ctx context.Context, _ fantasy.ToolCall) (fantasy.ToolRes
 func (f *fakeTool) ProviderOptions() fantasy.ProviderOptions     { return nil }
 func (f *fakeTool) SetProviderOptions(_ fantasy.ProviderOptions) {}
 
-// newRunner builds a hooks.Runner from a single HookConfig, running the
-// config-loader path that compiles the matcher regex.
-func newRunner(t *testing.T, cmd string) *hooks.Runner {
+// newRunner builds a hooks.Runner from per-event hook configs, running
+// the config-loader path that normalizes events and validates matchers.
+func newRunner(t *testing.T, hookCfg map[string][]config.HookConfig) *hooks.Runner {
 	t.Helper()
-	cfg := &config.Config{
-		Hooks: map[string][]config.HookConfig{
-			hooks.EventPreToolUse: {{Command: cmd}},
-		},
-	}
+	cfg := &config.Config{Hooks: hookCfg}
 	require.NoError(t, cfg.ValidateHooks())
-	return hooks.NewRunner(cfg.Hooks[hooks.EventPreToolUse], t.TempDir(), t.TempDir())
+	return hooks.NewRunner(cfg.Hooks, t.TempDir(), t.TempDir())
+}
+
+// preToolRunner builds a hooks.Runner holding a single PreToolUse hook.
+func preToolRunner(t *testing.T, cmd string) *hooks.Runner {
+	t.Helper()
+	return newRunner(t, map[string][]config.HookConfig{
+		hooks.EventPreToolUse: {{Command: cmd}},
+	})
+}
+
+// postToolRunner builds a hooks.Runner holding a single PostToolUse hook.
+func postToolRunner(t *testing.T, cmd string) *hooks.Runner {
+	t.Helper()
+	return newRunner(t, map[string][]config.HookConfig{
+		hooks.EventPostToolUse: {{Command: cmd}},
+	})
 }
 
 func TestHookedTool_AllowStampsHookApproval(t *testing.T) {
 	t.Parallel()
 
 	inner := &fakeTool{name: "view", resp: fantasy.NewTextResponse("ok")}
-	runner := newRunner(t, `echo '{"decision":"allow"}'`)
+	runner := preToolRunner(t, `echo '{"decision":"allow"}'`)
 	tool := newHookedTool(inner, runner)
 
 	_, err := tool.Run(t.Context(), fantasy.ToolCall{ID: "call-1", Name: "view"})
@@ -74,7 +86,7 @@ func TestHookedTool_SilentDoesNotStampApproval(t *testing.T) {
 	t.Parallel()
 
 	inner := &fakeTool{name: "view", resp: fantasy.NewTextResponse("ok")}
-	runner := newRunner(t, `exit 0`) // no stdout, no decision
+	runner := preToolRunner(t, `exit 0`) // no stdout, no decision
 	tool := newHookedTool(inner, runner)
 
 	_, err := tool.Run(t.Context(), fantasy.ToolCall{ID: "call-2", Name: "view"})
@@ -103,7 +115,7 @@ func TestHookedTool_DenySkipsInnerTool(t *testing.T) {
 	t.Parallel()
 
 	inner := &fakeTool{name: "bash"}
-	runner := newRunner(t, `echo "blocked" >&2; exit 2`)
+	runner := preToolRunner(t, `echo "blocked" >&2; exit 2`)
 	tool := newHookedTool(inner, runner)
 
 	resp, err := tool.Run(t.Context(), fantasy.ToolCall{ID: "call-3", Name: "bash"})
@@ -113,10 +125,115 @@ func TestHookedTool_DenySkipsInnerTool(t *testing.T) {
 	require.Contains(t, resp.Content, "blocked")
 }
 
+func TestHookedTool_PostToolUseFeedback(t *testing.T) {
+	t.Parallel()
+
+	inner := &fakeTool{name: "bash", resp: fantasy.NewTextResponse("tool output")}
+	runner := postToolRunner(t, `echo "use gofumpt next time" >&2; exit 2`)
+	tool := newHookedTool(inner, runner)
+
+	resp, err := tool.Run(t.Context(), fantasy.ToolCall{ID: "call-4", Name: "bash"})
+	require.NoError(t, err)
+	require.True(t, inner.called, "PostToolUse hooks cannot prevent execution")
+	// The original output is preserved and the hook's reason is appended
+	// so the model sees the feedback.
+	require.Contains(t, resp.Content, "tool output")
+	require.Contains(t, resp.Content, "PostToolUse hook feedback: use gofumpt next time")
+	require.False(t, resp.IsError, "a post-hoc block must not turn the result into an error")
+	require.False(t, resp.StopTurn)
+	require.Contains(t, resp.Metadata, `"post_hook"`)
+}
+
+func TestHookedTool_PostToolUseContext(t *testing.T) {
+	t.Parallel()
+
+	inner := &fakeTool{name: "view", resp: fantasy.NewTextResponse("file contents")}
+	runner := postToolRunner(t, `echo '{"context":"remember to run tests"}'`)
+	tool := newHookedTool(inner, runner)
+
+	resp, err := tool.Run(t.Context(), fantasy.ToolCall{ID: "call-5", Name: "view"})
+	require.NoError(t, err)
+	require.Contains(t, resp.Content, "file contents")
+	require.Contains(t, resp.Content, "remember to run tests")
+	require.False(t, resp.StopTurn)
+}
+
+func TestHookedTool_PostToolUseHalt(t *testing.T) {
+	t.Parallel()
+
+	inner := &fakeTool{name: "bash", resp: fantasy.NewTextResponse("leaked a secret")}
+	runner := postToolRunner(t, `echo "secret detected" >&2; exit 49`)
+	tool := newHookedTool(inner, runner)
+
+	resp, err := tool.Run(t.Context(), fantasy.ToolCall{ID: "call-6", Name: "bash"})
+	require.NoError(t, err)
+	require.True(t, inner.called)
+	require.True(t, resp.StopTurn, "halt from a PostToolUse hook ends the turn after this call")
+	require.Contains(t, resp.Content, "PostToolUse hook feedback: secret detected")
+}
+
+func TestHookedTool_PostToolUseSkippedWhenPreDenies(t *testing.T) {
+	t.Parallel()
+
+	inner := &fakeTool{name: "bash"}
+	runner := newRunner(t, map[string][]config.HookConfig{
+		hooks.EventPreToolUse:  {{Command: `echo "blocked" >&2; exit 2`}},
+		hooks.EventPostToolUse: {{Command: `echo '{"context":"post-marker"}'`}},
+	})
+	tool := newHookedTool(inner, runner)
+
+	resp, err := tool.Run(t.Context(), fantasy.ToolCall{ID: "call-7", Name: "bash"})
+	require.NoError(t, err)
+	require.False(t, inner.called)
+	require.NotContains(t, resp.Content, "post-marker",
+		"PostToolUse must not fire when the tool never ran")
+}
+
+func TestHookedTool_PostToolUseSeesRewrittenInput(t *testing.T) {
+	t.Parallel()
+
+	// The pre hook rewrites the command; the post hook reports the
+	// command it saw. PostToolUse must observe the input the tool
+	// actually ran with, not what the model originally sent.
+	inner := &fakeTool{name: "bash", resp: fantasy.NewTextResponse("ok")}
+	runner := newRunner(t, map[string][]config.HookConfig{
+		hooks.EventPreToolUse: {{Command: `echo '{"updated_input":{"command":"rewritten"}}'`}},
+		hooks.EventPostToolUse: {{
+			Command: `printf '{"context":"post saw %s"}' "$CRUSH_TOOL_INPUT_COMMAND"`,
+		}},
+	})
+	tool := newHookedTool(inner, runner)
+
+	resp, err := tool.Run(t.Context(), fantasy.ToolCall{
+		ID:    "call-8",
+		Name:  "bash",
+		Input: `{"command":"original"}`,
+	})
+	require.NoError(t, err)
+	require.Contains(t, resp.Content, "post saw rewritten")
+}
+
+func TestHookedTool_PostToolUseReceivesToolResponse(t *testing.T) {
+	t.Parallel()
+
+	// The stdin payload carries the executed tool's result; the hook
+	// echoes a marker only when it sees the expected content and error
+	// flag.
+	inner := &fakeTool{name: "bash", resp: fantasy.NewTextErrorResponse("boom")}
+	runner := postToolRunner(t,
+		`read -r line; case "$line" in *'"tool_response":{"content":"boom","is_error":true}'*) echo '{"context":"saw-response"}';; esac`)
+	tool := newHookedTool(inner, runner)
+
+	resp, err := tool.Run(t.Context(), fantasy.ToolCall{ID: "call-9", Name: "bash"})
+	require.NoError(t, err)
+	require.Contains(t, resp.Content, "saw-response")
+	require.True(t, resp.IsError, "the tool's own error flag is preserved")
+}
+
 func TestWrapToolsWithHooks(t *testing.T) {
 	t.Parallel()
 
-	runner := newRunner(t, `exit 0`)
+	runner := preToolRunner(t, `exit 0`)
 	inputs := []fantasy.AgentTool{&fakeTool{name: "a"}, &fakeTool{name: "b"}}
 
 	t.Run("top-level agent wraps every tool", func(t *testing.T) {

@@ -755,13 +755,22 @@ func toolOutputHookIndicator(sty *styles.Styles, metadata string, width int) str
 		return ""
 	}
 	var meta struct {
-		Hook *hooks.HookMetadata `json:"hook"`
+		Hook     *hooks.HookMetadata `json:"hook"`
+		PostHook *hooks.HookMetadata `json:"post_hook"`
 	}
-	if err := json.Unmarshal([]byte(metadata), &meta); err != nil || meta.Hook == nil {
+	if err := json.Unmarshal([]byte(metadata), &meta); err != nil {
 		return ""
 	}
-	h := meta.Hook
-	if len(h.Hooks) == 0 {
+	// PreToolUse entries render first, then PostToolUse entries, in the
+	// order the hooks fired.
+	var hookInfos []hooks.HookInfo
+	if meta.Hook != nil {
+		hookInfos = append(hookInfos, meta.Hook.Hooks...)
+	}
+	if meta.PostHook != nil {
+		hookInfos = append(hookInfos, meta.PostHook.Hooks...)
+	}
+	if len(hookInfos) == 0 {
 		return ""
 	}
 
@@ -769,12 +778,12 @@ func toolOutputHookIndicator(sty *styles.Styles, metadata string, width int) str
 	// for the name, matcher, and detail columns so they align. The name
 	// column is capped at maxHookNameWidth characters.
 	const maxHookNameWidth = 30
-	sanitizedNames := make([]string, len(h.Hooks))
-	details := make([]string, len(h.Hooks))
+	sanitizedNames := make([]string, len(hookInfos))
+	details := make([]string, len(hookInfos))
 	maxNameWidth := 0
 	maxMatcherWidth := 0
 	maxDetailWidth := 0
-	for i, hi := range h.Hooks {
+	for i, hi := range hookInfos {
 		sanitizedNames[i] = strings.ReplaceAll(hi.Name, "\n", "¶")
 		w := lipgloss.Width(sty.Tool.HookName.Render(sanitizedNames[i]))
 		if w > maxNameWidth {
@@ -812,7 +821,7 @@ func toolOutputHookIndicator(sty *styles.Styles, metadata string, width int) str
 	}
 
 	var lines []string
-	for i, hi := range h.Hooks {
+	for i, hi := range hookInfos {
 		name := truncateHookName(sanitizedNames[i], maxNameWidth)
 		lines = append(lines, renderHookLine(sty, hi, name, details[i], maxNameWidth, maxMatcherWidth))
 	}

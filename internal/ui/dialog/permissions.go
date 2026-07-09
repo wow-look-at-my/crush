@@ -546,9 +546,22 @@ func (p *Permissions) renderContent(width int) string {
 		return p.renderViewContent(width)
 	case tools.LSToolName:
 		return p.renderLSContent(width)
+	case tools.PlanExitToolName:
+		return p.renderPlanExitContent(width)
 	default:
 		return p.renderDefaultContent(width)
 	}
+}
+
+// renderPlanExitContent shows the plan the agent wants approved before
+// leaving plan mode.
+func (p *Permissions) renderPlanExitContent(width int) string {
+	params, ok := p.permission.Params.(tools.PlanExitPermissionsParams)
+	if !ok {
+		return p.renderDefaultContent(width)
+	}
+
+	return p.renderContentPanel(params.Plan, width)
 }
 
 func (p *Permissions) renderBashContent(width int) string {

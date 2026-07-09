@@ -50,6 +50,9 @@ type fileSnapshot struct {
 // the lifetime of the process (or workspace).
 type RuntimeOverrides struct {
 	SkipPermissionRequests bool
+	// PermissionMode overrides permissions.default_mode for this
+	// invocation (--permission-mode). Empty means no override.
+	PermissionMode string
 }
 
 // ConfigStore is the single entry point for all config access. It owns the
@@ -149,7 +152,8 @@ func (s *ConfigStore) KnownProviders() []catwalk.Provider {
 	return s.knownProviders
 }
 
-// SetupAgents configures the coder and task agents on the config.
+// SetupAgents configures the coder and task agents — plus any custom
+// agent definitions — on the config.
 func (s *ConfigStore) SetupAgents() {
 	s.Config().SetupAgents()
 }
@@ -964,6 +968,12 @@ func (s *ConfigStore) reloadFromDiskLocked(ctx context.Context) error {
 	// regexes are recompiled on the reloaded config (mirrors Load).
 	if err := cfg.ValidateHooks(); err != nil {
 		return fmt.Errorf("invalid hook configuration on reload: %w", err)
+	}
+
+	// Reload markdown agent files and validate the custom agent
+	// definitions (mirrors Load).
+	if err := cfg.ValidateAgents(s.workingDir); err != nil {
+		return fmt.Errorf("invalid agent configuration on reload: %w", err)
 	}
 
 	// Preserve runtime overrides

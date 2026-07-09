@@ -227,6 +227,22 @@ func NewViewTool(
 				return fantasy.NewImageResponse(imageData, mimeType), nil
 			}
 
+			// Render Jupyter notebooks as readable cells instead of raw
+			// JSON. Malformed notebook JSON falls through to the
+			// plain-text view below.
+			if strings.EqualFold(filepath.Ext(filePath), notebookExt) {
+				resp, handled, nbErr := viewNotebook(filePath, fileInfo.Size(), params)
+				if nbErr != nil {
+					return fantasy.ToolResponse{}, nbErr
+				}
+				if handled {
+					if !resp.IsError {
+						filetracker.RecordRead(ctx, sessionID, filePath)
+					}
+					return resp, nil
+				}
+			}
+
 			// Read the file content
 			maxContentSize := MaxViewSize
 			if isSkillFile {

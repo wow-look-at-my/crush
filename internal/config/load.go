@@ -84,6 +84,13 @@ func Load(workingDir, dataDir string, debug bool) (*ConfigStore, error) {
 		return nil, fmt.Errorf("invalid hook configuration: %w", err)
 	}
 
+	// Load markdown agent files and validate the custom agent
+	// definitions after all config merging is complete (mirrors hooks),
+	// so SetupAgents below only ever merges valid definitions.
+	if err := cfg.ValidateAgents(workingDir); err != nil {
+		return nil, fmt.Errorf("invalid agent configuration: %w", err)
+	}
+
 	if !isInsideWorktree() {
 		const depth = 2
 		const items = 100
@@ -1239,11 +1246,23 @@ func isAppleTerminal() bool { return os.Getenv("TERM_PROGRAM") == "Apple_Termina
 
 // normalizeHookEvent maps user-provided event names to their canonical
 // form. Matching is case-insensitive and accepts snake_case variants
-// (e.g. "pre_tool_use" → "PreToolUse").
+// (e.g. "pre_tool_use" → "PreToolUse"). The canonical names mirror the
+// hooks package's Event* constants (spelled out here because
+// internal/hooks imports this package). Unknown event names pass through
+// unchanged and simply never fire, so configs shared with other tools
+// (e.g. Claude Code events Crush doesn't support) still load.
 func normalizeHookEvent(name string) string {
 	switch strings.ToLower(strings.ReplaceAll(name, "_", "")) {
 	case "pretooluse":
 		return "PreToolUse"
+	case "posttooluse":
+		return "PostToolUse"
+	case "userpromptsubmit":
+		return "UserPromptSubmit"
+	case "stop":
+		return "Stop"
+	case "subagentstop":
+		return "SubagentStop"
 	default:
 		return name
 	}

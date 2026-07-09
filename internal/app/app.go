@@ -105,6 +105,7 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, skillsMgr
 	if cfg.Permissions != nil && cfg.Permissions.AllowedTools != nil {
 		allowedTools = cfg.Permissions.AllowedTools
 	}
+	permissionMode := initialPermissionMode(store)
 
 	app := &App{
 		Sessions:    sessions,
@@ -125,6 +126,7 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, skillsMgr
 		agentNotifications: pubsub.NewBroker[notify.Notification](),
 		runCompletions:     pubsub.NewBroker[notify.RunComplete](),
 	}
+	app.Permissions.SetMode(permissionMode)
 
 	app.setupEvents()
 
@@ -178,6 +180,26 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, skillsMgr
 	go app.LSPManager.TrackConfigured()
 
 	return app, nil
+}
+
+// initialPermissionMode resolves the permission mode the app starts in:
+// the --permission-mode runtime override (already validated by the CLI)
+// wins over the permissions.default_mode config value. An invalid config
+// value logs a warning and falls back to the default mode rather than
+// failing startup.
+func initialPermissionMode(store *config.ConfigStore) permission.Mode {
+	raw := store.Overrides().PermissionMode
+	if raw == "" {
+		if p := store.Config().Permissions; p != nil {
+			raw = p.DefaultMode
+		}
+	}
+	mode, err := permission.ParseMode(raw)
+	if err != nil {
+		slog.Warn("Invalid permission mode in config, using default", "mode", raw, "error", err)
+		return permission.ModeDefault
+	}
+	return mode
 }
 
 // Config returns the pure-data configuration.

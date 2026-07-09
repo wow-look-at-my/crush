@@ -395,14 +395,19 @@ func (c *Commands) setCommandItems(commandType CommandType) {
 				action = ActionAttachSkill{ID: cmd.Skill.SkillFilePath, Name: cmd.Skill.Name}
 			} else {
 				action = ActionRunCustomCommand{
-					Content:   cmd.Content,
-					Arguments: cmd.Arguments,
-					Skill:     cmd.Skill,
+					Content:      cmd.Content,
+					Arguments:    cmd.Arguments,
+					ArgumentHint: cmd.ArgumentHint,
+					AllowedTools: cmd.AllowedTools,
+					Skill:        cmd.Skill,
 				}
 			}
 			item := NewCommandItem(c.com.Styles, "custom_"+cmd.ID, cmd.Name, "", action)
-			if cmd.Skill != nil {
+			switch {
+			case cmd.Skill != nil:
 				item = item.WithDescription(cmd.Skill.Description)
+			case cmd.Description != "":
+				item = item.WithDescription(cmd.Description)
 			}
 			commandItems = append(commandItems, item)
 		}
@@ -437,6 +442,8 @@ func (c *Commands) defaultCommands() []*CommandItem {
 	// Only show compact command if there's an active session
 	if c.hasSession {
 		commands = append(commands, NewCommandItem(c.com.Styles, "summarize", "Summarize Session", "", ActionSummarize{SessionID: c.sessionID}))
+		commands = append(commands, NewCommandItem(c.com.Styles, "restore_checkpoint", "Restore Files to Checkpoint", "", ActionOpenDialog{RestoreID}).
+			WithAliases("rollback", "revert", "undo file changes"))
 	}
 
 	// Add reasoning toggle for models that support it
@@ -518,6 +525,8 @@ func (c *Commands) defaultCommands() []*CommandItem {
 	commands = append(
 		commands,
 		NewCommandItem(c.com.Styles, "toggle_yolo", "Toggle Yolo Mode", "ctrl+y", ActionToggleYoloMode{}),
+		NewCommandItem(c.com.Styles, "cycle_permission_mode", "Cycle Permission Mode", "shift+tab", ActionCyclePermissionMode{}).
+			WithAliases("plan mode", "accept edits"),
 		NewCommandItem(c.com.Styles, "toggle_help", "Toggle Help", "ctrl+g", ActionToggleHelp{}),
 		NewCommandItem(c.com.Styles, "init", "Initialize Project", "", ActionInitializeProject{}),
 	)

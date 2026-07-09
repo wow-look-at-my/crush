@@ -143,7 +143,7 @@ type (
 		states map[string]mcp.ClientInfo
 	}
 	// sendMessageMsg is sent to send a message.
-	// currently only used for mcp prompts.
+	// Used for MCP prompts and expanded custom commands.
 	sendMessageMsg struct {
 		Content     string
 		Attachments []message.Attachment
@@ -216,6 +216,11 @@ type UI struct {
 	// bangMode tracks whether the editor is in bang (!) shell mode.
 	bangMode     bool
 	bangWasEmpty bool // true when bang prompt became empty on last keystroke
+
+	// permMode mirrors the workspace's permission mode so the editor
+	// prompt is refreshed when the mode changes underneath the TUI
+	// (e.g. the agent's plan_exit approval flipping plan mode off).
+	permMode permission.Mode
 
 	// pendingBangCommand holds a shell command that was issued before
 	// the session finished loading. The loadSessionMsg handler creates
@@ -1095,6 +1100,14 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	// Refresh the editor prompt when the permission mode changes
+	// underneath the TUI (shift+tab, command palette, or the agent's
+	// plan_exit approval flipping plan mode off server-side).
+	if mode := m.com.Workspace.PermissionMode(); mode != m.permMode {
+		m.permMode = mode
+		m.setEditorPrompt(m.com.Workspace.PermissionSkipRequests())
+	}
+
 	// This logic gets triggered on any message type, but should it?
 	switch m.focus {
 	case uiFocusMain:
@@ -1109,6 +1122,10 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if !m.bangMode && m.com.Workspace.PermissionSkipRequests() {
 			m.textarea.Placeholder = "Yolo mode!"
+		} else if !m.bangMode && !m.isAgentBusy() {
+			if placeholder := permissionModeUIFor(m.permMode).placeholder; placeholder != "" {
+				m.textarea.Placeholder = placeholder
+			}
 		}
 	}
 
@@ -1548,6 +1565,9 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 		m.com.Workspace.PermissionSetSkipRequests(yolo)
 		m.setEditorPrompt(yolo)
 		m.dialog.CloseDialog(dialog.CommandsID)
+	case dialog.ActionCyclePermissionMode:
+		cmds = append(cmds, m.cyclePermissionMode())
+		m.dialog.CloseDialog(dialog.CommandsID)
 	case dialog.ActionSelectNotificationStyle:
 		cfg := m.com.Config()
 		if cfg != nil && cfg.Options != nil {
@@ -1701,6 +1721,19 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 			return util.NewInfoMsg("Reasoning effort set to " + msg.Effort)
 		})
 		m.dialog.CloseDialog(dialog.ReasoningID)
+	case dialog.ActionRestoreCheckpoint:
+		m.dialog.CloseDialog(dialog.RestoreID)
+		if m.isAgentBusy() {
+			cmds = append(cmds, util.ReportWarn("Agent is busy, please wait before restoring files..."))
+			break
+		}
+		cmds = append(cmds, func() tea.Msg {
+			result, err := m.com.Workspace.SessionRestoreFiles(context.Background(), msg.SessionID, msg.MessageID)
+			if err != nil {
+				return util.ReportError(err)()
+			}
+			return util.NewInfoMsg(dialog.RestoreSummary(result))
+		})
 	case dialog.ActionPermissionResponse:
 		m.dialog.CloseDialog(dialog.PermissionsID)
 		switch msg.Action {
@@ -1731,7 +1764,7 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 			argsDialog := dialog.NewArguments(
 				m.com,
 				"Custom Command Arguments",
-				"",
+				msg.ArgumentHint,
 				msg.Arguments,
 				msg, // Pass the action as the result
 			)
@@ -1746,7 +1779,14 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 		if msg.Skill != nil {
 			content = msg.Skill.FormatInvocation()
 		}
-		cmds = append(cmds, m.sendMessage(content))
+		// Commands with !`cmd` or @file syntax expand asynchronously
+		// (shell runs and permission prompts block); everything else
+		// keeps the plain synchronous path unchanged.
+		if msg.Skill == nil && commands.NeedsExpansion(content) {
+			cmds = append(cmds, m.expandCustomCommand(content, msg.AllowedTools))
+		} else {
+			cmds = append(cmds, m.sendMessage(content))
+		}
 		m.dialog.CloseFrontDialog()
 	case dialog.ActionAttachSkill:
 		m.dialog.CloseFrontDialog()
@@ -2032,6 +2072,9 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 				status = "enabled"
 			}
 			cmds = append(cmds, util.ReportInfo("Yolo mode "+status))
+			return true
+		case key.Matches(msg, m.keyMap.CyclePermissionMode):
+			cmds = append(cmds, m.cyclePermissionMode())
 			return true
 		}
 		return false
@@ -2696,6 +2739,7 @@ func (m *UI) FullHelp() [][]key.Binding {
 			k.Models,
 			k.Sessions,
 			k.ToggleYolo,
+			k.CyclePermissionMode,
 		)
 		if hasSession {
 			mainBinds = append(mainBinds, k.Chat.NewSession)
@@ -2758,6 +2802,7 @@ func (m *UI) FullHelp() [][]key.Binding {
 					k.Models,
 					k.Sessions,
 					k.ToggleYolo,
+					k.CyclePermissionMode,
 				},
 			)
 			editorBinds := []key.Binding{
@@ -3159,8 +3204,9 @@ func (m *UI) openEditor(value string) tea.Cmd {
 	})
 }
 
-// setEditorPrompt configures the textarea prompt function based on whether
-// yolo mode or bang mode is enabled.
+// setEditorPrompt configures the textarea prompt function based on
+// whether yolo mode, bang mode, or a non-default permission mode is
+// enabled. Bang mode wins over yolo, which wins over permission modes.
 func (m *UI) setEditorPrompt(yolo bool) {
 	if m.bangMode {
 		m.textarea.SetPromptFunc(4, m.bangPromptFunc)
@@ -3170,7 +3216,27 @@ func (m *UI) setEditorPrompt(yolo bool) {
 		m.textarea.SetPromptFunc(4, m.yoloPromptFunc)
 		return
 	}
-	m.textarea.SetPromptFunc(4, m.normalPromptFunc)
+	switch m.com.Workspace.PermissionMode() {
+	case permission.ModeAcceptEdits:
+		m.textarea.SetPromptFunc(4, m.acceptEditsPromptFunc)
+	case permission.ModePlan:
+		m.textarea.SetPromptFunc(4, m.planPromptFunc)
+	default:
+		m.textarea.SetPromptFunc(4, m.normalPromptFunc)
+	}
+}
+
+// cyclePermissionMode advances the permission mode (default → accept
+// edits → plan) and reports the effective mode. The permission policy
+// applies immediately; the agent's tool list is rebuilt when the next
+// run starts.
+func (m *UI) cyclePermissionMode() tea.Cmd {
+	m.com.Workspace.PermissionSetMode(nextPermissionMode(m.com.Workspace.PermissionMode()))
+	// Read the mode back so the indicator and message stay honest even
+	// when the workspace cannot switch modes (client/server mode).
+	m.permMode = m.com.Workspace.PermissionMode()
+	m.setEditorPrompt(m.com.Workspace.PermissionSkipRequests())
+	return util.ReportInfo("Permission mode: " + permissionModeUIFor(m.permMode).label)
 }
 
 // normalPromptFunc returns the normal editor prompt style ("  > " on first
@@ -3204,6 +3270,38 @@ func (m *UI) yoloPromptFunc(info textarea.PromptInfo) string {
 		return t.Editor.PromptYoloDotsFocused.Render()
 	}
 	return t.Editor.PromptYoloDotsBlurred.Render()
+}
+
+// planPromptFunc returns the plan mode editor prompt style with " P "
+// icon and colored dots.
+func (m *UI) planPromptFunc(info textarea.PromptInfo) string {
+	t := m.com.Styles
+	if info.LineNumber == 0 {
+		if info.Focused {
+			return t.Editor.PromptPlanIconFocused.Render()
+		}
+		return t.Editor.PromptPlanIconBlurred.Render()
+	}
+	if info.Focused {
+		return t.Editor.PromptPlanDotsFocused.Render()
+	}
+	return t.Editor.PromptPlanDotsBlurred.Render()
+}
+
+// acceptEditsPromptFunc returns the accept-edits mode editor prompt
+// style with " E " icon and colored dots.
+func (m *UI) acceptEditsPromptFunc(info textarea.PromptInfo) string {
+	t := m.com.Styles
+	if info.LineNumber == 0 {
+		if info.Focused {
+			return t.Editor.PromptAcceptEditsIconFocused.Render()
+		}
+		return t.Editor.PromptAcceptEditsIconBlurred.Render()
+	}
+	if info.Focused {
+		return t.Editor.PromptAcceptEditsDotsFocused.Render()
+	}
+	return t.Editor.PromptAcceptEditsDotsBlurred.Render()
 }
 
 // bangPromptFunc returns the bang mode editor prompt style with Turtle-colored
@@ -3723,11 +3821,38 @@ func (m *UI) openDialog(id string) tea.Cmd {
 		if cmd := m.openQuitDialog(); cmd != nil {
 			cmds = append(cmds, cmd)
 		}
+	case dialog.RestoreID:
+		if cmd := m.openRestoreDialog(); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
 	default:
 		// Unknown dialog
 		break
 	}
 	return tea.Batch(cmds...)
+}
+
+// openRestoreDialog opens the checkpoint-restore dialog for the active
+// session.
+func (m *UI) openRestoreDialog() tea.Cmd {
+	if m.dialog.ContainsDialog(dialog.RestoreID) {
+		m.dialog.BringToFront(dialog.RestoreID)
+		return nil
+	}
+	if m.session == nil {
+		return util.ReportWarn("No active session to restore")
+	}
+	if m.isAgentBusy() {
+		return util.ReportWarn("Agent is busy, please wait before restoring files...")
+	}
+
+	restoreDialog, err := dialog.NewRestore(m.com, m.session.ID)
+	if err != nil {
+		return util.ReportError(err)
+	}
+
+	m.dialog.OpenDialog(restoreDialog)
+	return nil
 }
 
 // openQuitDialog opens the quit confirmation dialog.

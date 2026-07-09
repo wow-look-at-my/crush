@@ -19,8 +19,22 @@ var webSearchDescriptionTpl = template.Must(
 		Parse(string(webSearchDescriptionTmpl)),
 )
 
-// NewWebSearchTool creates a web search tool for sub-agents (no permissions needed).
-func NewWebSearchTool(client *http.Client) fantasy.AgentTool {
+type webSearchDescriptionData struct {
+	GhAvailable bool
+	FetchTool   string
+}
+
+func webSearchDescription(fetchTool string) string {
+	return renderTemplate(webSearchDescriptionTpl, webSearchDescriptionData{
+		GhAvailable: ghAvailable,
+		FetchTool:   fetchTool,
+	})
+}
+
+// NewWebSearchTool creates a web search tool (read-only, no permissions
+// needed). fetchTool is the name of the fetch tool available to the same
+// agent, so the description points the model at the right follow-up tool.
+func NewWebSearchTool(client *http.Client, fetchTool string) fantasy.AgentTool {
 	if client == nil {
 		transport := http.DefaultTransport.(*http.Transport).Clone()
 		transport.MaxIdleConns = 100
@@ -35,7 +49,7 @@ func NewWebSearchTool(client *http.Client) fantasy.AgentTool {
 
 	return fantasy.NewParallelAgentTool(
 		WebSearchToolName,
-		renderToolDescription(webSearchDescriptionTpl),
+		webSearchDescription(fetchTool),
 		func(ctx context.Context, params WebSearchParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
 			if params.Query == "" {
 				return fantasy.NewTextErrorResponse("query is required"), nil

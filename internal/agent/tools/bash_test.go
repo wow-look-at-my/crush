@@ -39,6 +39,12 @@ func (m *mockBashPermissionService) SkipRequests() bool {
 	return false
 }
 
+func (m *mockBashPermissionService) SetMode(mode permission.Mode) {}
+
+func (m *mockBashPermissionService) Mode() permission.Mode {
+	return permission.ModeDefault
+}
+
 func (m *mockBashPermissionService) SubscribeNotifications(ctx context.Context) <-chan pubsub.Event[permission.PermissionNotification] {
 	return make(<-chan pubsub.Event[permission.PermissionNotification])
 }
@@ -108,6 +114,12 @@ func (m *recordingPermissionService) SetSkipRequests(skip bool) {}
 
 func (m *recordingPermissionService) SkipRequests() bool {
 	return false
+}
+
+func (m *recordingPermissionService) SetMode(mode permission.Mode) {}
+
+func (m *recordingPermissionService) Mode() permission.Mode {
+	return permission.ModeDefault
 }
 
 func (m *recordingPermissionService) SubscribeNotifications(ctx context.Context) <-chan pubsub.Event[permission.PermissionNotification] {
