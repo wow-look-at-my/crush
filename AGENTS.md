@@ -102,7 +102,7 @@ internal/
   as checkpoints. The pure plan engine and undoable disk apply live in
   `internal/history/restore.go` (`ComputeRestorePlan` /
   `ApplyRestorePlan`); `app.SessionRestoreFiles` wires them up and the
-  TUI drives it from the command palette (`internal/ui/dialog/restore.go`).
+  TUI drives it from the commands palette (`internal/ui/dialog/restore.go`).
 - **CGO disabled**: builds with `CGO_ENABLED=0` and
   `GOEXPERIMENT=greenteagc`.
 

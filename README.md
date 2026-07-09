@@ -468,7 +468,7 @@ You can also skip all permission prompts entirely by running Crush with the
 ### Permission Modes
 
 Crush also has three permission modes, cycled at runtime with
-<kbd>shift+tab</kbd> (or via the command palette):
+<kbd>shift+tab</kbd> (or via the commands palette):
 
 - **default**: every gated tool call prompts as usual.
 - **accept_edits**: file edits (`edit`, `multiedit`, `write`) inside the
@@ -764,7 +764,8 @@ including the file's pre-edit content the first time a session touches it.
 Those versions double as checkpoints: you can roll a session's file changes
 back to how they were just before any of your messages.
 
-Open the command palette (`ctrl+p`) and pick **Restore Files to Checkpoint**.
+Open the commands palette (<kbd>Ctrl+P</kbd>) and pick **Restore Files to
+Checkpoint**.
 Choose a message (the most recent one — the "last checkpoint" — is
 preselected), review the files that will change, and confirm. Files edited
 after that point are written back to their checkpoint content, and files that
