@@ -91,6 +91,13 @@ internal/
   `Config.SetupAgents` and dispatched by name through the `agent` tool
   (`internal/agent/agent_tool.go`). Read-only toolset and no MCP tools
   unless granted; `coder`/`task` names are reserved.
+- **Custom commands**: markdown prompts in `~/.config/crush/commands/` /
+  `<project>/.crush/commands/` with optional YAML frontmatter
+  (description, argument-hint, allowed-tools), `$ARGS` placeholders,
+  permission-gated inline `` !`cmd` `` execution, and `@file` context
+  references (`internal/commands`, expansion wired from the TUI in
+  `internal/ui/model/customcmd.go`). Expansion order: $ARGS → ! → @,
+  single-pass tokenization (substituted output is never rescanned).
 - **CGO disabled**: builds with `CGO_ENABLED=0` and
   `GOEXPERIMENT=greenteagc`.
 

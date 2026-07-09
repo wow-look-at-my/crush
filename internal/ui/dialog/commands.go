@@ -395,14 +395,19 @@ func (c *Commands) setCommandItems(commandType CommandType) {
 				action = ActionAttachSkill{ID: cmd.Skill.SkillFilePath, Name: cmd.Skill.Name}
 			} else {
 				action = ActionRunCustomCommand{
-					Content:   cmd.Content,
-					Arguments: cmd.Arguments,
-					Skill:     cmd.Skill,
+					Content:      cmd.Content,
+					Arguments:    cmd.Arguments,
+					ArgumentHint: cmd.ArgumentHint,
+					AllowedTools: cmd.AllowedTools,
+					Skill:        cmd.Skill,
 				}
 			}
 			item := NewCommandItem(c.com.Styles, "custom_"+cmd.ID, cmd.Name, "", action)
-			if cmd.Skill != nil {
+			switch {
+			case cmd.Skill != nil:
 				item = item.WithDescription(cmd.Skill.Description)
+			case cmd.Description != "":
+				item = item.WithDescription(cmd.Description)
 			}
 			commandItems = append(commandItems, item)
 		}

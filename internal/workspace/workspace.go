@@ -111,6 +111,15 @@ type Workspace interface {
 	PermissionDeny(perm permission.PermissionRequest) bool
 	PermissionSkipRequests() bool
 	PermissionSetSkipRequests(skip bool)
+	// PermissionRequest raises an interactive permission request — the
+	// same flow tool calls use, honoring --yolo, permission modes, and
+	// session grants — and blocks until it is resolved or ctx is
+	// cancelled. Custom command !`cmd` expansion uses it. Only supported
+	// in-process: the client/server proto has no request endpoint, so in
+	// client mode it fails with an error (allowed-tools pre-approval and
+	// the safe-command allowlist still work there, since neither needs a
+	// prompt).
+	PermissionRequest(ctx context.Context, req permission.CreatePermissionRequest) (bool, error)
 	// PermissionMode and PermissionSetMode read/switch the permission
 	// mode (default, accept_edits, plan). Only supported in-process:
 	// the client/server proto has no mode endpoint yet, so in client

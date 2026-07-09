@@ -322,7 +322,7 @@ func TestSplitAgentFrontmatter(t *testing.T) {
 
 	t.Run("tolerates BOM, CRLF, and leading blank lines", func(t *testing.T) {
 		t.Parallel()
-		fm, body, err := splitAgentFrontmatter("\uFEFF\r\n---\r\ndescription: hi\r\n---\r\nbody\r\n")
+		fm, body, err := SplitFrontmatter("\uFEFF\r\n---\r\ndescription: hi\r\n---\r\nbody\r\n")
 		require.NoError(t, err)
 		assert.Equal(t, "description: hi", fm)
 		assert.Equal(t, "body\n", body)
@@ -330,7 +330,7 @@ func TestSplitAgentFrontmatter(t *testing.T) {
 
 	t.Run("unclosed frontmatter errors", func(t *testing.T) {
 		t.Parallel()
-		_, _, err := splitAgentFrontmatter("---\ndescription: hi\nbody")
+		_, _, err := SplitFrontmatter("---\ndescription: hi\nbody")
 		require.Error(t, err)
 	})
 }

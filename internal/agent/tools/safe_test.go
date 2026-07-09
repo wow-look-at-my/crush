@@ -45,3 +45,31 @@ func TestContainsCommandChaining(t *testing.T) {
 		})
 	}
 }
+
+func TestIsSafeReadOnly(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		input    string
+		expected bool
+	}{
+		{"bare safe command", "pwd", true},
+		{"safe command with args", "git status --short", true},
+		{"dash counts as a boundary", "ls-la", true},
+		{"case insensitive", "GIT LOG --oneline", true},
+		{"unsafe command", "rm -rf /", false},
+		{"safe prefix of unsafe word", "gitk", false},
+		{"chained safe commands", "git status; rm -rf /", false},
+		{"piped safe command", "git log | head", false},
+		{"substitution", "echo $(rm -rf /)", false},
+		{"empty", "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.expected, IsSafeReadOnly(tt.input), "IsSafeReadOnly(%q)", tt.input)
+		})
+	}
+}

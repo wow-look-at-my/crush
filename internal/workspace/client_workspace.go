@@ -341,6 +341,15 @@ func (w *ClientWorkspace) PermissionSetSkipRequests(skip bool) {
 	_ = w.client.SetPermissionsSkipRequests(context.Background(), w.workspaceID(), skip)
 }
 
+// PermissionRequest is unsupported in client mode: the client/server
+// proto has no endpoint to raise a request from the client side. Custom
+// command !`cmd` segments that would need an interactive prompt fail
+// with this error; safe-listed and allowed-tools pre-approved commands
+// still run. See the Workspace interface docs.
+func (w *ClientWorkspace) PermissionRequest(ctx context.Context, req permission.CreatePermissionRequest) (bool, error) {
+	return false, errors.New("interactive permission requests are not supported in client/server mode")
+}
+
 // PermissionMode reports the default mode: the client/server proto has
 // no permission-mode endpoint yet, so remote workspaces run in whatever
 // mode their server-side config selected and cannot be switched from

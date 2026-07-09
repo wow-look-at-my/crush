@@ -129,19 +129,21 @@ func (c *Config) loadAgentFiles() error {
 
 // agentFileFrontmatter is the YAML frontmatter of a markdown agent file.
 type agentFileFrontmatter struct {
-	Name        string   `yaml:"name"`
-	Description string   `yaml:"description"`
-	Tools       toolList `yaml:"tools"`
-	Model       string   `yaml:"model"`
-	Disabled    bool     `yaml:"disabled"`
+	Name        string     `yaml:"name"`
+	Description string     `yaml:"description"`
+	Tools       StringList `yaml:"tools"`
+	Model       string     `yaml:"model"`
+	Disabled    bool       `yaml:"disabled"`
 }
 
-// toolList accepts either a YAML sequence or a comma-separated scalar
-// ("view, grep"), the shape agent files commonly use elsewhere.
-type toolList []string
+// StringList accepts either a YAML sequence or a comma-separated scalar
+// ("view, grep"), the shape agent and custom command files commonly use
+// elsewhere. Shared by the agent-file frontmatter here and the custom
+// command frontmatter in internal/commands.
+type StringList []string
 
 // UnmarshalYAML implements yaml.Unmarshaler.
-func (t *toolList) UnmarshalYAML(value *yaml.Node) error {
+func (t *StringList) UnmarshalYAML(value *yaml.Node) error {
 	switch value.Kind {
 	case yaml.SequenceNode:
 		var items []string
@@ -181,7 +183,7 @@ func parseAgentFile(path string) (string, Agent, error) {
 	if err != nil {
 		return "", Agent{}, err
 	}
-	frontmatter, body, err := splitAgentFrontmatter(string(content))
+	frontmatter, body, err := SplitFrontmatter(string(content))
 	if err != nil {
 		return "", Agent{}, err
 	}
@@ -199,11 +201,18 @@ func parseAgentFile(path string) (string, Agent, error) {
 	}, nil
 }
 
-// splitAgentFrontmatter extracts the YAML frontmatter and body from a
-// markdown agent file. Same tolerances as the skills parser: an optional
-// UTF-8 BOM, CRLF line endings, leading blank lines, and trailing spaces
-// after the "---" delimiters.
-func splitAgentFrontmatter(content string) (frontmatter, body string, err error) {
+// ErrNoFrontmatter is returned by SplitFrontmatter when the content does
+// not begin with a "---" frontmatter delimiter. Callers with optional
+// frontmatter (custom commands) detect it with errors.Is and fall back to
+// treating the whole content as the body.
+var ErrNoFrontmatter = errors.New("missing YAML frontmatter")
+
+// SplitFrontmatter extracts the YAML frontmatter and body from a markdown
+// file. Same tolerances as the skills parser: an optional UTF-8 BOM, CRLF
+// line endings, leading blank lines, and trailing spaces after the "---"
+// delimiters. Shared by agent files (here) and custom command files
+// (internal/commands).
+func SplitFrontmatter(content string) (frontmatter, body string, err error) {
 	// Strip UTF-8 BOM for compatibility with editors that include it.
 	content = strings.TrimPrefix(content, "\uFEFF")
 	// Normalize line endings to \n for consistent parsing.
@@ -215,7 +224,7 @@ func splitAgentFrontmatter(content string) (frontmatter, body string, err error)
 		return strings.TrimSpace(line) != ""
 	})
 	if start == -1 || strings.TrimSpace(lines[start]) != "---" {
-		return "", "", errors.New("missing YAML frontmatter")
+		return "", "", ErrNoFrontmatter
 	}
 
 	endOffset := slices.IndexFunc(lines[start+1:], func(line string) bool {

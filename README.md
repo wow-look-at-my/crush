@@ -675,6 +675,88 @@ disable-model-invocation: true
 
 Skills with `disable-model-invocation` won't appear in the model's available skills list but can still be invoked manually by users.
 
+### Custom Commands
+
+Custom commands are reusable prompts stored as markdown files and invoked from
+the commands palette (<kbd>Ctrl+P</kbd>, under **User**). Crush loads them
+from:
+
+- `$XDG_CONFIG_HOME/crush/commands/` and `~/.crush/commands/` (shown with a
+  `user:` prefix)
+- `<project>/.crush/commands/` (shown with a `project:` prefix)
+
+Each `.md` file is one command; subdirectories namespace the name
+(`review/security.md` becomes `user:review:security`). The file body is sent
+as the prompt. `$NAME`-style placeholders (uppercase) become required
+arguments collected in a dialog before the command runs.
+
+#### Frontmatter
+
+A command file may start with optional YAML frontmatter. Files without
+frontmatter behave exactly as before, and unknown keys are ignored:
+
+```markdown
+---
+description: Summarize recent changes on a branch
+argument-hint: "[branch-name]"
+allowed-tools: Bash(git log:*), Bash(git diff:*)
+---
+Summarize the changes on branch $BRANCH:
+
+- Recent commits: !`git log --oneline -20 $BRANCH`
+- Style guide: @docs/style.md
+```
+
+- `description` shows next to the command in the palette.
+- `argument-hint` shows in the argument-entry dialog.
+- `allowed-tools` pre-approves inline bash (see below). It accepts a YAML
+  list or a comma-separated string of Claude Code style patterns: `Bash`
+  or `Bash(*)` (any command), `Bash(git status)` (exact), and
+  `Bash(git log:*)` (prefix). Prefix patterns must end at a word boundary,
+  and a command containing chaining metacharacters (`;`, `|`, `&&`, `` ` ``,
+  `$(`) never pre-approves — both slightly stricter than Claude Code.
+
+#### Inline bash with `` !`cmd` ``
+
+Segments of the form `` !`command` `` execute when the command is invoked,
+and their output is substituted in place — great for pulling live context
+(git status, issue details) into a prompt. Execution runs through Crush's
+shell in the project root and is permission-gated like the bash tool:
+
+- Safe read-only commands (`git status`, `ls`, ...) run without asking.
+- Commands matching an `allowed-tools` pattern are pre-approved.
+- Everything else raises the regular permission dialog; `--yolo` skips
+  prompts entirely, while accept-edits mode does **not** auto-approve bash
+  and plan mode denies non-read-only commands.
+- A denied (or failing-to-start) command aborts the whole invocation.
+
+Output is capped at 30,000 characters with a truncation note; a non-zero
+exit substitutes the output plus the exit code and stderr so the model sees
+the failure. When attached to a remote workspace (client/server mode) the
+interactive prompt isn't available, so only safe-listed and pre-approved
+commands run.
+
+#### File references with `@path`
+
+Tokens like `@src/main.go` (at a word boundary, path relative to the
+project root; `~` and absolute paths also work) include the referenced
+file when the command runs: the mention stays in the prose and the file
+content is appended as a delimited `<file path="...">` block. A directory
+reference appends a brief listing instead. Files are capped at 200KB with
+a truncation note, repeated references are included once, and a missing
+path aborts the invocation with an error rather than silently sending a
+broken prompt.
+
+#### Expansion order
+
+Frontmatter is stripped at load time, then on invocation: `$ARGS`
+substitution → `` !`cmd` `` execution → `@file` expansion. The body is
+tokenized once, up front, and substituted text is never rescanned — a
+command's output can't smuggle in `@file` reads, and file content can't
+inject `` !`cmd` `` executions. Argument values *are* substituted into
+`` !`cmd` `` text before execution (so `` !`gh issue view $ISSUE` ``
+works); the permission prompt always shows the final command.
+
 ### Desktop notifications
 
 Crush sends desktop notifications when a tool call requires permission and when

@@ -252,6 +252,10 @@ func (w *AppWorkspace) PermissionSetSkipRequests(skip bool) {
 	w.app.Permissions.SetSkipRequests(skip)
 }
 
+func (w *AppWorkspace) PermissionRequest(ctx context.Context, req permission.CreatePermissionRequest) (bool, error) {
+	return w.app.Permissions.Request(ctx, req)
+}
+
 func (w *AppWorkspace) PermissionMode() permission.Mode {
 	return w.app.Permissions.Mode()
 }

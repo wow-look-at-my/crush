@@ -143,7 +143,7 @@ type (
 		states map[string]mcp.ClientInfo
 	}
 	// sendMessageMsg is sent to send a message.
-	// currently only used for mcp prompts.
+	// Used for MCP prompts and expanded custom commands.
 	sendMessageMsg struct {
 		Content     string
 		Attachments []message.Attachment
@@ -1751,7 +1751,7 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 			argsDialog := dialog.NewArguments(
 				m.com,
 				"Custom Command Arguments",
-				"",
+				msg.ArgumentHint,
 				msg.Arguments,
 				msg, // Pass the action as the result
 			)
@@ -1766,7 +1766,14 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 		if msg.Skill != nil {
 			content = msg.Skill.FormatInvocation()
 		}
-		cmds = append(cmds, m.sendMessage(content))
+		// Commands with !`cmd` or @file syntax expand asynchronously
+		// (shell runs and permission prompts block); everything else
+		// keeps the plain synchronous path unchanged.
+		if msg.Skill == nil && commands.NeedsExpansion(content) {
+			cmds = append(cmds, m.expandCustomCommand(content, msg.AllowedTools))
+		} else {
+			cmds = append(cmds, m.sendMessage(content))
+		}
 		m.dialog.CloseFrontDialog()
 	case dialog.ActionAttachSkill:
 		m.dialog.CloseFrontDialog()

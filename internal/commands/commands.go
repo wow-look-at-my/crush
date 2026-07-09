@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/home"
 	"github.com/charmbracelet/crush/internal/skills"
+	"gopkg.in/yaml.v3"
 )
 
 var namedArgPattern = regexp.MustCompile(`\$([A-Z][A-Z0-9_]*)`)
@@ -46,8 +47,53 @@ type CustomCommand struct {
 	Name      string
 	Content   string
 	Arguments []Argument
+	// Description is the optional frontmatter description shown in the
+	// command palette next to the command name.
+	Description string
+	// ArgumentHint is the optional frontmatter argument-hint shown in the
+	// argument-entry dialog.
+	ArgumentHint string
+	// AllowedTools carries the frontmatter allowed-tools patterns
+	// (Claude Code style, e.g. "Bash(git status:*)") that pre-approve
+	// inline !`cmd` executions during expansion.
+	AllowedTools []string
 	// Skill is set when this command represents a user-invocable skill
 	Skill *skills.Skill
+}
+
+// Frontmatter is the optional YAML frontmatter of a custom command file.
+// It is deliberately a flat, extensible struct: adding support for a
+// future key is one field here plus its consumer. Unknown keys are
+// ignored so files written for other tools still load.
+type Frontmatter struct {
+	// Description is a short human-readable summary shown in the command
+	// palette.
+	Description string `yaml:"description"`
+	// ArgumentHint hints at the expected arguments, shown in the
+	// argument-entry dialog (e.g. "[issue-number] [priority]").
+	ArgumentHint string `yaml:"argument-hint"`
+	// AllowedTools lists Claude Code style tool patterns. Only
+	// Bash(...) patterns are meaningful to crush today: they pre-approve
+	// matching inline !`cmd` executions. Accepts a YAML list or a
+	// comma-separated scalar.
+	AllowedTools config.StringList `yaml:"allowed-tools"`
+}
+
+// parseFrontmatter splits an optional YAML frontmatter off a command
+// file. Files without frontmatter — and files whose frontmatter is
+// malformed (unclosed block, invalid YAML) — are returned verbatim as
+// the body with a zero Frontmatter, so pre-frontmatter command files
+// keep working byte-identically and a bad header never hides a command.
+func parseFrontmatter(content string) (Frontmatter, string) {
+	raw, body, err := config.SplitFrontmatter(content)
+	if err != nil {
+		return Frontmatter{}, content
+	}
+	var meta Frontmatter
+	if err := yaml.Unmarshal([]byte(raw), &meta); err != nil {
+		return Frontmatter{}, content
+	}
+	return meta, body
 }
 
 type commandSource struct {
@@ -178,12 +224,16 @@ func loadCommand(path, baseDir, prefix string) (CustomCommand, error) {
 	}
 
 	id := buildCommandID(path, baseDir, prefix)
+	meta, body := parseFrontmatter(string(content))
 
 	return CustomCommand{
-		ID:        id,
-		Name:      id,
-		Content:   string(content),
-		Arguments: extractArgNames(string(content)),
+		ID:           id,
+		Name:         id,
+		Content:      body,
+		Arguments:    extractArgNames(body),
+		Description:  meta.Description,
+		ArgumentHint: meta.ArgumentHint,
+		AllowedTools: meta.AllowedTools,
 	}, nil
 }
 
