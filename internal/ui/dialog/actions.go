@@ -71,6 +71,13 @@ type (
 		Permission permission.PermissionRequest
 		Action     PermissionAction
 	}
+	// ActionRestoreCheckpoint is sent when the user confirms rolling
+	// the session's file changes back to the state they had just
+	// before the given message was sent.
+	ActionRestoreCheckpoint struct {
+		SessionID string
+		MessageID string
+	}
 	// ActionRunCustomCommand is a message to run a custom command.
 	ActionRunCustomCommand struct {
 		Content      string

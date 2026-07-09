@@ -1721,6 +1721,19 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 			return util.NewInfoMsg("Reasoning effort set to " + msg.Effort)
 		})
 		m.dialog.CloseDialog(dialog.ReasoningID)
+	case dialog.ActionRestoreCheckpoint:
+		m.dialog.CloseDialog(dialog.RestoreID)
+		if m.isAgentBusy() {
+			cmds = append(cmds, util.ReportWarn("Agent is busy, please wait before restoring files..."))
+			break
+		}
+		cmds = append(cmds, func() tea.Msg {
+			result, err := m.com.Workspace.SessionRestoreFiles(context.Background(), msg.SessionID, msg.MessageID)
+			if err != nil {
+				return util.ReportError(err)()
+			}
+			return util.NewInfoMsg(dialog.RestoreSummary(result))
+		})
 	case dialog.ActionPermissionResponse:
 		m.dialog.CloseDialog(dialog.PermissionsID)
 		switch msg.Action {
@@ -3808,11 +3821,38 @@ func (m *UI) openDialog(id string) tea.Cmd {
 		if cmd := m.openQuitDialog(); cmd != nil {
 			cmds = append(cmds, cmd)
 		}
+	case dialog.RestoreID:
+		if cmd := m.openRestoreDialog(); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
 	default:
 		// Unknown dialog
 		break
 	}
 	return tea.Batch(cmds...)
+}
+
+// openRestoreDialog opens the checkpoint-restore dialog for the active
+// session.
+func (m *UI) openRestoreDialog() tea.Cmd {
+	if m.dialog.ContainsDialog(dialog.RestoreID) {
+		m.dialog.BringToFront(dialog.RestoreID)
+		return nil
+	}
+	if m.session == nil {
+		return util.ReportWarn("No active session to restore")
+	}
+	if m.isAgentBusy() {
+		return util.ReportWarn("Agent is busy, please wait before restoring files...")
+	}
+
+	restoreDialog, err := dialog.NewRestore(m.com, m.session.ID)
+	if err != nil {
+		return util.ReportError(err)
+	}
+
+	m.dialog.OpenDialog(restoreDialog)
+	return nil
 }
 
 // openQuitDialog opens the quit confirmation dialog.

@@ -32,7 +32,7 @@ func NewDiagnosticsTool(lspManager *lsp.Manager) fantasy.AgentTool {
 			if lspManager.Clients().Len() == 0 {
 				return fantasy.NewTextErrorResponse("no LSP clients available"), nil
 			}
-			notifyLSPs(ctx, lspManager, params.FilePath)
+			NotifyLSPs(ctx, lspManager, params.FilePath)
 			output := getDiagnostics(params.FilePath, lspManager)
 			return fantasy.NewTextResponse(output), nil
 		},
@@ -86,11 +86,11 @@ func waitForLSPDiagnostics(
 	wg.Wait()
 }
 
-// notifyLSPs notifies LSP servers that a file has changed and waits for
+// NotifyLSPs notifies LSP servers that a file has changed and waits for
 // updated diagnostics. Use this after edit/multiedit operations.
 // When filepath is empty, refreshes all open files across all LSP clients
 // and sends a workspace-level change notification for full re-analysis.
-func notifyLSPs(
+func NotifyLSPs(
 	ctx context.Context,
 	manager *lsp.Manager,
 	filepath string,

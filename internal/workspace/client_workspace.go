@@ -391,6 +391,19 @@ func (w *ClientWorkspace) ListSessionHistory(ctx context.Context, sessionID stri
 	return protoToFiles(files), nil
 }
 
+// SessionRestorePlan is not supported in client/server mode: the proto
+// has no checkpoint-restore endpoint yet, and the files live on the
+// server's filesystem. See the Workspace interface docs.
+func (w *ClientWorkspace) SessionRestorePlan(ctx context.Context, sessionID, messageID string) (history.RestorePlan, error) {
+	return history.RestorePlan{}, errors.New("checkpoint restore is not supported in client/server mode")
+}
+
+// SessionRestoreFiles is not supported in client/server mode; see
+// [ClientWorkspace.SessionRestorePlan].
+func (w *ClientWorkspace) SessionRestoreFiles(ctx context.Context, sessionID, messageID string) (history.RestoreResult, error) {
+	return history.RestoreResult{}, errors.New("checkpoint restore is not supported in client/server mode")
+}
+
 // -- LSP --
 
 func (w *ClientWorkspace) LSPStart(ctx context.Context, path string) {

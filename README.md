@@ -757,6 +757,24 @@ inject `` !`cmd` `` executions. Argument values *are* substituted into
 `` !`cmd` `` text before execution (so `` !`gh issue view $ISSUE` ``
 works); the permission prompt always shows the final command.
 
+### Checkpoints
+
+Crush records a version of every file the agent edits, writes, or creates —
+including the file's pre-edit content the first time a session touches it.
+Those versions double as checkpoints: you can roll a session's file changes
+back to how they were just before any of your messages.
+
+Open the command palette (`ctrl+p`) and pick **Restore Files to Checkpoint**.
+Choose a message (the most recent one — the "last checkpoint" — is
+preselected), review the files that will change, and confirm. Files edited
+after that point are written back to their checkpoint content, and files that
+didn't exist yet are deleted. Restores never touch git, never write outside
+the working directory, and are refused while the agent is running.
+
+Restores are themselves undoable: before applying, each file's current
+content is recorded as a new version, so restoring to a later checkpoint
+rolls the changes forward again.
+
 ### Desktop notifications
 
 Crush sends desktop notifications when a tool call requires permission and when

@@ -134,6 +134,18 @@ type Workspace interface {
 
 	// History
 	ListSessionHistory(ctx context.Context, sessionID string) ([]history.File, error)
+	// SessionRestorePlan computes — without touching disk — the plan
+	// that would roll the session's file changes back to the state
+	// they had just before the given message was sent. Only supported
+	// in-process: the client/server proto has no restore endpoint yet,
+	// so in client mode it fails with an error.
+	SessionRestorePlan(ctx context.Context, sessionID, messageID string) (history.RestorePlan, error)
+	// SessionRestoreFiles applies that plan: it writes every touched
+	// file back to its checkpoint content and deletes files that did
+	// not exist yet, recording each file's pre-restore content as a
+	// new history version first so the restore is itself undoable.
+	// Only supported in-process, like SessionRestorePlan.
+	SessionRestoreFiles(ctx context.Context, sessionID, messageID string) (history.RestoreResult, error)
 
 	// LSP
 	LSPStart(ctx context.Context, path string)

@@ -284,6 +284,14 @@ func (w *AppWorkspace) ListSessionHistory(ctx context.Context, sessionID string)
 	return w.app.History.ListBySession(ctx, sessionID)
 }
 
+func (w *AppWorkspace) SessionRestorePlan(ctx context.Context, sessionID, messageID string) (history.RestorePlan, error) {
+	return w.app.SessionRestorePlan(ctx, sessionID, messageID)
+}
+
+func (w *AppWorkspace) SessionRestoreFiles(ctx context.Context, sessionID, messageID string) (history.RestoreResult, error) {
+	return w.app.SessionRestoreFiles(ctx, sessionID, messageID)
+}
+
 // -- LSP --
 
 func (w *AppWorkspace) LSPStart(ctx context.Context, path string) {

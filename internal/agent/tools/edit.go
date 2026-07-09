@@ -98,7 +98,7 @@ func NewEditTool(
 				return response, nil
 			}
 
-			notifyLSPs(ctx, lspManager, params.FilePath)
+			NotifyLSPs(ctx, lspManager, params.FilePath)
 
 			text := fmt.Sprintf("<result>\n%s\n</result>\n", response.Content)
 			text += getDiagnostics(params.FilePath, lspManager)
