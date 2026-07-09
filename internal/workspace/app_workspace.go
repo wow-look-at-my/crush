@@ -252,6 +252,14 @@ func (w *AppWorkspace) PermissionSetSkipRequests(skip bool) {
 	w.app.Permissions.SetSkipRequests(skip)
 }
 
+func (w *AppWorkspace) PermissionMode() permission.Mode {
+	return w.app.Permissions.Mode()
+}
+
+func (w *AppWorkspace) PermissionSetMode(mode permission.Mode) {
+	w.app.Permissions.SetMode(mode)
+}
+
 // -- FileTracker --
 
 func (w *AppWorkspace) FileTrackerRecordRead(ctx context.Context, sessionID, path string) {

@@ -50,6 +50,9 @@ type fileSnapshot struct {
 // the lifetime of the process (or workspace).
 type RuntimeOverrides struct {
 	SkipPermissionRequests bool
+	// PermissionMode overrides permissions.default_mode for this
+	// invocation (--permission-mode). Empty means no override.
+	PermissionMode string
 }
 
 // ConfigStore is the single entry point for all config access. It owns the

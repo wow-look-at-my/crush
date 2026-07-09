@@ -20,6 +20,10 @@ type mockSessionAgent struct {
 	model     Model
 	runFunc   func(ctx context.Context, call SessionAgentCall) (*fantasy.AgentResult, error)
 	cancelled []string
+
+	// Captured by the setters for assertions.
+	tools        []fantasy.AgentTool
+	promptSuffix string
 }
 
 func (m *mockSessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy.AgentResult, error) {
@@ -32,8 +36,9 @@ func (m *mockSessionAgent) BeginAccepted(sessionID string) *AcceptedRun {
 
 func (m *mockSessionAgent) Model() Model                        { return m.model }
 func (m *mockSessionAgent) SetModels(large, small Model)        {}
-func (m *mockSessionAgent) SetTools(tools []fantasy.AgentTool)  {}
+func (m *mockSessionAgent) SetTools(tools []fantasy.AgentTool)  { m.tools = tools }
 func (m *mockSessionAgent) SetSystemPrompt(systemPrompt string) {}
+func (m *mockSessionAgent) SetSystemPromptSuffix(suffix string) { m.promptSuffix = suffix }
 func (m *mockSessionAgent) Cancel(sessionID string) {
 	m.cancelled = append(m.cancelled, sessionID)
 }

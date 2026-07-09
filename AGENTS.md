@@ -41,7 +41,7 @@ internal/
     migrations/                    Schema migrations
   lsp/                             LSP client manager, auto-discovery, on-demand startup
   ui/                              Bubble Tea v2 TUI (see internal/ui/AGENTS.md)
-  permission/                      Tool permission checking and allow-lists
+  permission/                      Tool permission checking, allow-lists, and permission modes
   skills/                          Skill file discovery and loading
   shell/                           Bash command execution with background job support
   event/                           Telemetry (PostHog)

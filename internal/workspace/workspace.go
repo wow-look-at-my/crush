@@ -111,6 +111,12 @@ type Workspace interface {
 	PermissionDeny(perm permission.PermissionRequest) bool
 	PermissionSkipRequests() bool
 	PermissionSetSkipRequests(skip bool)
+	// PermissionMode and PermissionSetMode read/switch the permission
+	// mode (default, accept_edits, plan). Only supported in-process:
+	// the client/server proto has no mode endpoint yet, so in client
+	// mode reads report the default mode and writes are no-ops.
+	PermissionMode() permission.Mode
+	PermissionSetMode(mode permission.Mode)
 
 	// FileTracker
 	FileTrackerRecordRead(ctx context.Context, sessionID, path string)

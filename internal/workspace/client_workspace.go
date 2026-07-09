@@ -341,6 +341,19 @@ func (w *ClientWorkspace) PermissionSetSkipRequests(skip bool) {
 	_ = w.client.SetPermissionsSkipRequests(context.Background(), w.workspaceID(), skip)
 }
 
+// PermissionMode reports the default mode: the client/server proto has
+// no permission-mode endpoint yet, so remote workspaces run in whatever
+// mode their server-side config selected and cannot be switched from
+// the client. See the Workspace interface docs.
+func (w *ClientWorkspace) PermissionMode() permission.Mode {
+	return permission.ModeDefault
+}
+
+// PermissionSetMode is a no-op in client mode; see PermissionMode.
+func (w *ClientWorkspace) PermissionSetMode(mode permission.Mode) {
+	slog.Debug("Permission modes are not supported in client/server mode", "mode", mode)
+}
+
 // -- FileTracker --
 
 func (w *ClientWorkspace) FileTrackerRecordRead(ctx context.Context, sessionID, path string) {

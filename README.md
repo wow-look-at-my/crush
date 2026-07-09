@@ -465,6 +465,36 @@ permissions. Use this with care.
 You can also skip all permission prompts entirely by running Crush with the
 `--yolo` flag. Be very, very careful with this feature.
 
+### Permission Modes
+
+Crush also has three permission modes, cycled at runtime with
+<kbd>shift+tab</kbd> (or via the command palette):
+
+- **default**: every gated tool call prompts as usual.
+- **accept_edits**: file edits (`edit`, `multiedit`, `write`) inside the
+  working directory are auto-approved; everything else still prompts.
+- **plan**: read-only planning mode. The agent loses its mutating tools
+  (including `bash`) and gains a `plan_exit` tool: when its plan is ready it
+  presents it for approval, and approving returns Crush to the default mode so
+  it can implement.
+
+The editor prompt shows the active mode (`E` for accept edits, `P` for plan).
+Tool availability updates when the next message starts; the permission policy
+itself applies immediately. Modes are independent of `--yolo`, which skips all
+permission handling.
+
+Set the startup mode in your config, or per invocation with
+`--permission-mode`:
+
+```json
+{
+  "$schema": "https://charm.land/crush.json",
+  "permissions": {
+    "default_mode": "plan"
+  }
+}
+```
+
 ### Disabling Built-In Tools
 
 If you'd like to prevent Crush from using certain built-in tools entirely, you

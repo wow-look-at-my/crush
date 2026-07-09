@@ -248,6 +248,10 @@ const (
 
 type Permissions struct {
 	AllowedTools []string `json:"allowed_tools,omitempty" jsonschema:"description=List of tools that don't require permission prompts,example=bash,example=view"`
+	// DefaultMode is the permission mode Crush starts in. It can be
+	// switched at runtime from the TUI (shift+tab) and overridden per
+	// invocation with --permission-mode.
+	DefaultMode string `json:"default_mode,omitempty" jsonschema:"description=Permission mode to start in: default asks for permission as usual; accept_edits auto-approves file edits inside the working directory; plan makes the agent read-only,enum=default,enum=accept_edits,enum=plan,default=default"`
 }
 
 type TrailerStyle string
@@ -755,6 +759,7 @@ func allToolNames() []string {
 		"view",
 		"web_search",
 		"write",
+		"plan_exit",
 		"list_mcp_resources",
 		"read_mcp_resource",
 	}

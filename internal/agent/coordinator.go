@@ -771,6 +771,23 @@ func (c *coordinator) buildTools(ctx context.Context, agent config.Agent, isSubA
 			slog.Debug("MCP not allowed", "tool", tool.Name(), "agent", agent.Name)
 		}
 	}
+	// Apply the permission-mode tool policy to the top-level agent
+	// (built-in and MCP tools alike): plan mode restricts the list to
+	// the read-only set and adds plan_exit, whose approval flow is how
+	// the user leaves plan mode. Sub-agents are exempt — the task agent
+	// already runs with the read-only tool set. Tools are rebuilt at
+	// the start of every run (UpdateModels), so a mode switch takes
+	// effect on the next run.
+	if !isSubAgent {
+		mode := c.permissions.Mode()
+		filteredTools = slices.DeleteFunc(filteredTools, func(tool fantasy.AgentTool) bool {
+			return !mode.AllowsTool(tool.Info().Name)
+		})
+		if mode == permission.ModePlan && slices.Contains(agent.AllowedTools, tools.PlanExitToolName) {
+			filteredTools = append(filteredTools, tools.NewPlanExitTool(c.permissions, c.cfg.WorkingDir(), c.exitPlanMode))
+		}
+	}
+
 	slices.SortFunc(filteredTools, func(a, b fantasy.AgentTool) int {
 		return strings.Compare(a.Info().Name, b.Info().Name)
 	})
@@ -1196,7 +1213,14 @@ func (c *coordinator) UpdateModels(ctx context.Context) error {
 		return err
 	}
 	c.currentAgent.SetModels(large, small)
+	return c.applyPermissionMode(ctx)
+}
 
+// applyPermissionMode rebuilds the coder agent's tool list and
+// system-prompt addition from the current permission mode. It runs at
+// the start of every run (via UpdateModels), which is what makes
+// runtime mode switches take effect on the next run.
+func (c *coordinator) applyPermissionMode(ctx context.Context) error {
 	agentCfg, ok := c.cfg.Config().Agents[config.AgentCoder]
 	if !ok {
 		return errCoderAgentNotConfigured
@@ -1207,7 +1231,20 @@ func (c *coordinator) UpdateModels(ctx context.Context) error {
 		return err
 	}
 	c.currentAgent.SetTools(tools)
+	c.currentAgent.SetSystemPromptSuffix(c.permissions.Mode().PromptAddition())
 	return nil
+}
+
+// exitPlanMode is invoked by the plan_exit tool after the user approves
+// the plan. It returns the permission mode to default and refreshes the
+// agent so the in-flight run picks up the full toolset on its very next
+// step (the agent re-reads its tool list per step). The plan-mode
+// system-prompt addition was captured when the run started and lingers
+// until the run ends; the plan_exit tool result tells the model it may
+// implement now.
+func (c *coordinator) exitPlanMode(ctx context.Context) error {
+	c.permissions.SetMode(permission.ModeDefault)
+	return c.applyPermissionMode(ctx)
 }
 
 func (c *coordinator) QueuedPrompts(sessionID string) int {

@@ -31,6 +31,7 @@ import (
 	"github.com/charmbracelet/crush/internal/event"
 	"github.com/charmbracelet/crush/internal/lock"
 	crushlog "github.com/charmbracelet/crush/internal/log"
+	"github.com/charmbracelet/crush/internal/permission"
 	"github.com/charmbracelet/crush/internal/projects"
 	"github.com/charmbracelet/crush/internal/proto"
 	"github.com/charmbracelet/crush/internal/server"
@@ -57,6 +58,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVarP(&clientHost, "host", "H", server.DefaultHost(), "Connect to a specific crush server host (for advanced users)")
 	rootCmd.Flags().BoolP("help", "h", false, "Help")
 	rootCmd.Flags().BoolP("yolo", "y", false, "Automatically accept all permissions (dangerous mode)")
+	rootCmd.Flags().String("permission-mode", "", "Permission mode to start in (default, accept_edits, plan)")
 	rootCmd.Flags().StringP("session", "s", "", "Continue a previous session by ID")
 	rootCmd.Flags().BoolP("continue", "C", false, "Continue the most recent session")
 	rootCmd.MarkFlagsMutuallyExclusive("session", "continue")
@@ -265,6 +267,13 @@ func setupLocalWorkspace(cmd *cobra.Command) (workspace.Workspace, func(), error
 
 	cfg := store.Config()
 	store.Overrides().SkipPermissionRequests = yolo
+	if permissionMode, _ := cmd.Flags().GetString("permission-mode"); permissionMode != "" {
+		mode, err := permission.ParseMode(permissionMode)
+		if err != nil {
+			return nil, nil, err
+		}
+		store.Overrides().PermissionMode = string(mode)
+	}
 
 	if err := os.MkdirAll(cfg.Options.DataDirectory, 0o700); err != nil {
 		return nil, nil, fmt.Errorf("failed to create data directory: %q %w", cfg.Options.DataDirectory, err)

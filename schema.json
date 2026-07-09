@@ -548,6 +548,16 @@
           },
           "type": "array",
           "description": "List of tools that don't require permission prompts"
+        },
+        "default_mode": {
+          "type": "string",
+          "enum": [
+            "default",
+            "accept_edits",
+            "plan"
+          ],
+          "description": "Permission mode to start in: default asks for permission as usual; accept_edits auto-approves file edits inside the working directory; plan makes the agent read-only",
+          "default": "default"
         }
       },
       "additionalProperties": false,

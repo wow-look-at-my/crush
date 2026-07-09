@@ -139,6 +139,10 @@ type SessionAgent interface {
 	SetModels(large Model, small Model)
 	SetTools(tools []fantasy.AgentTool)
 	SetSystemPrompt(systemPrompt string)
+	// SetSystemPromptSuffix sets a per-mode addition appended to the
+	// system prompt at the start of each run (e.g. the plan-mode
+	// instructions). Empty removes any previous suffix.
+	SetSystemPromptSuffix(suffix string)
 	Cancel(sessionID string)
 	CancelAll()
 	IsSessionBusy(sessionID string) bool
@@ -163,6 +167,12 @@ type sessionAgent struct {
 	smallModel         *csync.Value[Model]
 	systemPromptPrefix *csync.Value[string]
 	systemPrompt       *csync.Value[string]
+	// systemPromptSuffix is the permission-mode addition appended to
+	// the system prompt when a run starts. The coordinator refreshes it
+	// from the current mode before every run (UpdateModels); like the
+	// prompt itself it is captured at run start, so a mid-run mode
+	// switch affects the next run.
+	systemPromptSuffix *csync.Value[string]
 	tools              *csync.Slice[fantasy.AgentTool]
 
 	isSubAgent           bool
@@ -242,6 +252,7 @@ func NewSessionAgent(
 		smallModel:           csync.NewValue(opts.SmallModel),
 		systemPromptPrefix:   csync.NewValue(opts.SystemPromptPrefix),
 		systemPrompt:         csync.NewValue(opts.SystemPrompt),
+		systemPromptSuffix:   csync.NewValue(""),
 		isSubAgent:           opts.IsSubAgent,
 		sessions:             opts.Sessions,
 		messages:             opts.Messages,
@@ -672,6 +683,10 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 
 	if s := instructions.String(); s != "" {
 		systemPrompt += "\n\n<mcp-instructions>\n" + s + "\n</mcp-instructions>"
+	}
+
+	if suffix := a.systemPromptSuffix.Get(); suffix != "" {
+		systemPrompt += "\n\n" + suffix
 	}
 
 	if len(agentTools) > 0 {
@@ -2093,6 +2108,10 @@ func (a *sessionAgent) SetModels(large Model, small Model) {
 
 func (a *sessionAgent) SetTools(tools []fantasy.AgentTool) {
 	a.tools.SetSlice(tools)
+}
+
+func (a *sessionAgent) SetSystemPromptSuffix(suffix string) {
+	a.systemPromptSuffix.Set(suffix)
 }
 
 func (a *sessionAgent) SetSystemPrompt(systemPrompt string) {

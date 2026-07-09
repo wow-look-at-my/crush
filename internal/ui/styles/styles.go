@@ -139,6 +139,18 @@ type Styles struct {
 		PromptBangIconBlurred lipgloss.Style
 		PromptBangDotsFocused lipgloss.Style
 		PromptBangDotsBlurred lipgloss.Style
+
+		// Plan permission-mode prompt (" P " icon + ":::" dots).
+		PromptPlanIconFocused lipgloss.Style
+		PromptPlanIconBlurred lipgloss.Style
+		PromptPlanDotsFocused lipgloss.Style
+		PromptPlanDotsBlurred lipgloss.Style
+
+		// Accept-edits permission-mode prompt (" E " icon + ":::" dots).
+		PromptAcceptEditsIconFocused lipgloss.Style
+		PromptAcceptEditsIconBlurred lipgloss.Style
+		PromptAcceptEditsDotsFocused lipgloss.Style
+		PromptAcceptEditsDotsBlurred lipgloss.Style
 	}
 
 	// Radio

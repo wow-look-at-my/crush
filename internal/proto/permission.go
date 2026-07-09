@@ -136,6 +136,12 @@ func unmarshalToolParams(toolName string, raw json.RawMessage) (any, error) {
 			return nil, err
 		}
 		return params, nil
+	case PlanExitToolName:
+		var params PlanExitPermissionsParams
+		if err := json.Unmarshal(raw, &params); err != nil {
+			return nil, err
+		}
+		return params, nil
 	default:
 		// For unknown tools, keep the raw JSON as-is.
 		var generic map[string]any

@@ -81,6 +81,13 @@ type Service interface {
 	AutoApproveSession(sessionID string)
 	SetSkipRequests(skip bool)
 	SkipRequests() bool
+	// SetMode switches the permission mode (default, accept_edits,
+	// plan). Invalid modes fall back to ModeDefault. The request
+	// policy applies immediately; the agent's tool list is rebuilt at
+	// the start of the next run.
+	SetMode(mode Mode)
+	// Mode returns the current permission mode.
+	Mode() Mode
 	SubscribeNotifications(ctx context.Context) <-chan pubsub.Event[PermissionNotification]
 }
 
@@ -102,7 +109,10 @@ type permissionService struct {
 	autoApproveSessions   map[string]bool
 	autoApproveSessionsMu sync.RWMutex
 	skip                  atomic.Bool
-	allowedTools          []string
+	// mode holds the current permission Mode. Always a valid Mode;
+	// SetMode normalizes invalid values to ModeDefault.
+	mode         atomic.Value
+	allowedTools []string
 
 	// used to make sure we only process one request at a time
 	requestMu       sync.Mutex
@@ -181,6 +191,28 @@ func (s *permissionService) Deny(permission PermissionRequest) bool {
 func (s *permissionService) Request(ctx context.Context, opts CreatePermissionRequest) (bool, error) {
 	if s.skip.Load() {
 		return true, nil
+	}
+
+	// Consult the permission-mode policy before anything else (except
+	// --yolo, which skips all permission handling). It runs ahead of
+	// the static allowlist so plan mode's deny is a real backstop: not
+	// even an allowed_tools entry lets a mutating call through while
+	// planning. We publish the outcome so UI/audit subscribers see it.
+	switch s.Mode().decide(opts, s.workingDir) {
+	case policyAllow:
+		s.notificationBroker.Publish(pubsub.CreatedEvent, PermissionNotification{
+			ToolCallID: opts.ToolCallID,
+			Granted:    true,
+		})
+		return true, nil
+	case policyDeny:
+		s.notificationBroker.Publish(pubsub.CreatedEvent, PermissionNotification{
+			ToolCallID: opts.ToolCallID,
+			Denied:     true,
+		})
+		return false, nil
+	case policyAsk:
+		// Fall through to the normal flow.
 	}
 
 	// Check if the tool/action combination is in the allowlist
@@ -295,6 +327,20 @@ func (s *permissionService) SkipRequests() bool {
 	return s.skip.Load()
 }
 
+func (s *permissionService) SetMode(mode Mode) {
+	if !mode.Valid() {
+		mode = ModeDefault
+	}
+	s.mode.Store(mode)
+}
+
+func (s *permissionService) Mode() Mode {
+	if mode, ok := s.mode.Load().(Mode); ok {
+		return mode
+	}
+	return ModeDefault
+}
+
 func NewPermissionService(workingDir string, skip bool, allowedTools []string) Service {
 	svc := &permissionService{
 		Broker:              pubsub.NewBroker[PermissionRequest](),
@@ -306,5 +352,6 @@ func NewPermissionService(workingDir string, skip bool, allowedTools []string) S
 		pendingRequests:     csync.NewMap[string, chan bool](),
 	}
 	svc.skip.Store(skip)
+	svc.mode.Store(ModeDefault)
 	return svc
 }
