@@ -23,6 +23,7 @@ import (
 type Prompt struct {
 	name       string
 	template   string
+	static     bool
 	now        func() time.Time
 	platform   string
 	workingDir string
@@ -79,7 +80,23 @@ func NewPrompt(name, promptTemplate string, opts ...Option) (*Prompt, error) {
 	return p, nil
 }
 
+// NewStaticPrompt returns a Prompt whose Build renders text verbatim,
+// with no template processing and no prompt-data collection. It is used
+// for user-authored prompts (custom agents), which must never break on
+// template metacharacters like "{{".
+func NewStaticPrompt(name, text string) *Prompt {
+	return &Prompt{
+		name:     name,
+		template: text,
+		static:   true,
+		now:      time.Now,
+	}
+}
+
 func (p *Prompt) Build(ctx context.Context, provider, model string, store *config.ConfigStore) (string, error) {
+	if p.static {
+		return p.template, nil
+	}
 	t, err := template.New(p.name).Parse(p.template)
 	if err != nil {
 		return "", fmt.Errorf("parsing template: %w", err)

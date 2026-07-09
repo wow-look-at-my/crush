@@ -84,6 +84,13 @@ func Load(workingDir, dataDir string, debug bool) (*ConfigStore, error) {
 		return nil, fmt.Errorf("invalid hook configuration: %w", err)
 	}
 
+	// Load markdown agent files and validate the custom agent
+	// definitions after all config merging is complete (mirrors hooks),
+	// so SetupAgents below only ever merges valid definitions.
+	if err := cfg.ValidateAgents(workingDir); err != nil {
+		return nil, fmt.Errorf("invalid agent configuration: %w", err)
+	}
+
 	if !isInsideWorktree() {
 		const depth = 2
 		const items = 100

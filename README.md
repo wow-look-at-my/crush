@@ -495,6 +495,66 @@ Set the startup mode in your config, or per invocation with
 }
 ```
 
+### Custom Agents
+
+Crush can delegate focused tasks to sub-agents via its `agent` tool. Out of
+the box that's a single read-only search agent, but you can define your own
+named agents — each with its own prompt, toolset, and model — and the model
+will pick between them by name.
+
+Define agents in your config:
+
+```json
+{
+  "$schema": "https://charm.land/crush.json",
+  "agents": {
+    "reviewer": {
+      "description": "Reviews a diff or file for correctness and style issues.",
+      "prompt": "You are a meticulous code reviewer. Report concrete problems with file:line references.",
+      "model": "small"
+    },
+    "fixer": {
+      "description": "Applies small well-scoped fixes.",
+      "prompt_file": "./prompts/fixer.md",
+      "allowed_tools": ["view", "grep", "glob", "edit", "write"],
+      "allowed_mcp": { "context7": [] }
+    }
+  }
+}
+```
+
+Or as markdown files with YAML frontmatter, in `<project>/.crush/agents/` or
+`~/.config/crush/agents/` (the file name is the agent name unless the
+frontmatter sets one):
+
+```markdown
+---
+description: Reviews a diff or file for correctness and style issues.
+tools: view, grep, glob
+model: small
+---
+
+You are a meticulous code reviewer. Report concrete problems with file:line
+references.
+```
+
+Some details:
+
+- `description` is required — it's how the model decides which agent to use.
+- Agents are **read-only by default**: without `allowed_tools` an agent gets
+  the same read-only toolset as the built-in search agent, and no MCP tools
+  unless `allowed_mcp` grants them. You may grant mutating tools (`edit`,
+  `write`, `bash`, …); permission prompts and plan mode still apply to those
+  tool calls as usual.
+- `model` picks between your configured `large` (default) and `small` models.
+- `prompt` is used verbatim as the agent's system prompt; `prompt_file` loads
+  it from a file instead. When neither is set the built-in task prompt is
+  used.
+- The names `coder` and `task` are reserved, and agents can't be given the
+  `agent` tool (no nested sub-agents).
+- When the same name is defined more than once, `crush.json` wins over
+  project agent files, which win over user-level ones.
+
 ### Disabling Built-In Tools
 
 If you'd like to prevent Crush from using certain built-in tools entirely, you

@@ -3,6 +3,63 @@
   "$id": "https://github.com/charmbracelet/crush/internal/config/config",
   "$ref": "#/$defs/Config",
   "$defs": {
+    "Agent": {
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Display name for the agent. Defaults to the agent's key"
+        },
+        "description": {
+          "type": "string",
+          "description": "What this agent is for and when to use it. Required for custom agents; the model sees it when picking an agent"
+        },
+        "disabled": {
+          "type": "boolean",
+          "description": "Whether this agent is disabled",
+          "default": false
+        },
+        "model": {
+          "type": "string",
+          "enum": [
+            "large",
+            "small"
+          ],
+          "description": "The model type to use for this agent",
+          "default": "large"
+        },
+        "prompt": {
+          "type": "string",
+          "description": "System prompt for the agent; used verbatim. Defaults to the built-in task prompt when empty"
+        },
+        "prompt_file": {
+          "type": "string",
+          "description": "Path to a file containing the system prompt. Relative paths resolve against the working directory. Mutually exclusive with prompt"
+        },
+        "allowed_tools": {
+          "items": {
+            "type": "string",
+            "examples": [
+              "view",
+              "grep"
+            ]
+          },
+          "type": "array",
+          "description": "Tools this agent may use. A custom agent without this gets the read-only toolset"
+        },
+        "allowed_mcp": {
+          "additionalProperties": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "type": "object",
+          "description": "MCP servers this agent may use; each maps to the tools allowed from that server (empty list = every tool). A custom agent without this gets no MCP tools"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
     "Attribution": {
       "properties": {
         "trailer_style": {
@@ -99,6 +156,13 @@
           },
           "type": "object",
           "description": "User-defined shell commands that fire on hook events (PreToolUse / PostToolUse / UserPromptSubmit / Stop / SubagentStop)"
+        },
+        "agents": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Agent"
+          },
+          "type": "object",
+          "description": "Custom agent definitions selectable via the agent tool. The names coder and task are reserved"
         }
       },
       "additionalProperties": false,

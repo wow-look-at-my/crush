@@ -24,7 +24,7 @@ internal/
     provider.go                    Provider configuration and model resolution
   agent/
     agent.go                       SessionAgent: runs LLM conversations per session
-    coordinator.go                 Coordinator: manages named agents ("coder", "task")
+    coordinator.go                 Coordinator: manages named agents ("coder", "task", custom agents)
     hooked_tool.go                 Decorator running PreToolUse/PostToolUse hooks around tool execution
     prompts.go                     Loads Go-template system prompts
     templates/                     System prompt templates (coder.md.tpl, task.md.tpl, etc.)
@@ -84,6 +84,13 @@ internal/
   UserPromptSubmit and SubagentStop fire from the coordinator's run paths,
   Stop from the session agent. See `docs/hooks/` for the user-facing
   protocol.
+- **Custom agents**: named sub-agent definitions (prompt, toolset, model)
+  from the `agents` config key or markdown files in
+  `<project>/.crush/agents/` / `~/.config/crush/agents/`
+  (`internal/config/agents.go`), merged with the built-ins by
+  `Config.SetupAgents` and dispatched by name through the `agent` tool
+  (`internal/agent/agent_tool.go`). Read-only toolset and no MCP tools
+  unless granted; `coder`/`task` names are reserved.
 - **CGO disabled**: builds with `CGO_ENABLED=0` and
   `GOEXPERIMENT=greenteagc`.
 
